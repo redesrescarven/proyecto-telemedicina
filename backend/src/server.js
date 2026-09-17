@@ -898,6 +898,260 @@ app.get('/api/medical-history/patient/:userId/summary', checkOperatorRole(['medi
     }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MÓDULO DE REPORTES E INTELIGENCIA MÉDICA (analytics-reports-loop)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Normaliza un parámetro de fecha (startDate/endDate). Si llega en formato
+// 'YYYY-MM-DD' (date-only) se interpreta como inicio de día (endOfDay=false)
+// o fin de día 23:59:59.999 (endOfDay=true) para que el rango amplio incluya
+// registros reales del día completo.
+const normalizeReportDate = (value, endOfDay) => {
+    if (!value) return null;
+    const str = String(value).trim();
+    if (!str) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+        const [y, m, d] = str.split('-').map(Number);
+        if (endOfDay) return new Date(y, m - 1, d, 23, 59, 59, 999);
+        return new Date(y, m - 1, d, 0, 0, 0, 0);
+    }
+    const parsed = new Date(str);
+    return isNaN(parsed.getTime()) ? null : parsed;
+};
+
+// Convierte Timestamp/Date/string/number a epoch (ms). Devuelve null si no es convertible.
+const toEpochMs = (value) => {
+    if (value === null || value === undefined) return null;
+    if (typeof value.toDate === 'function') {
+        try { return value.toDate().getTime(); } catch (e) { return null; }
+    }
+    if (value instanceof Date && !isNaN(value.getTime())) return value.getTime();
+    if (typeof value === 'string' || typeof value === 'number') {
+        const parsed = new Date(value);
+        return isNaN(parsed.getTime()) ? null : parsed.getTime();
+    }
+    return null;
+};
+
+// Coincidencia del filtro Tipo de Servicio (telemedicina | emergencia | todos).
+const matchesServiceType = (encounterType, serviceType) => {
+    if (!serviceType || serviceType === 'todos') return true;
+    const type = String(encounterType || '').toLowerCase();
+    if (serviceType === 'telemedicina') return type.includes('telemedicine');
+    if (serviceType === 'emergencia') return type.includes('emergencia') || type.includes('emergency');
+    return true;
+};
+
+// Coincidencia del filtro Cédula/Paciente (patientId): userId, cédula o nombre.
+const matchesPatient = (data, patientId) => {
+    if (!patientId) return true;
+    const norm = String(patientId).trim().toLowerCase();
+    if (!norm) return true;
+    const fields1 = (data && data.fase1 && data.fase1.fields) || {};
+    return Boolean(
+        (data.userId && String(data.userId).toLowerCase() === norm) ||
+        (fields1.cedula && String(fields1.cedula).toLowerCase() === norm) ||
+        (fields1.nombre && String(fields1.nombre).toLowerCase().includes(norm))
+    );
+};
+
+// Coincidencia del filtro Médico (doctorId): filledBy / filledById / filledByName
+// de Fase 1 o Fase 2 (identificador o nombre parcial).
+const matchesDoctor = (data, doctorId) => {
+    if (!doctorId) return true;
+    const norm = String(doctorId).trim().toLowerCase();
+    if (!norm) return true;
+    const candidates = [
+        data.fase1 && data.fase1.filledBy,
+        data.fase1 && data.fase1.filledById,
+        data.fase1 && data.fase1.filledByName,
+        data.fase2 && data.fase2.filledBy,
+        data.fase2 && data.fase2.filledById,
+        data.fase2 && data.fase2.filledByName
+    ];
+    return candidates.some((c) => c && String(c).trim().toLowerCase().includes(norm));
+};
+
+// Materializa las historias médicas de todas las subcolecciones (collectionGroup)
+// aplicando los filtros de fecha/paciente/médico/tipo de servicio. Devuelve una
+// lista enriquecida con metadatos normalizados (fecha ISO, paciente, cédula,
+// médico, diagnóstico, estado) ordenados por fecha descendente.
+const fetchReportHistories = async ({ startDate, endDate, patientId, doctorId, serviceType }) => {
+    const appId = process.env.APP_ID || 'default-app-id';
+    const start = normalizeReportDate(startDate, false);
+    const end = normalizeReportDate(endDate, true);
+
+    const snapshot = await db.collectionGroup('medicalHistory').get();
+    const historias = [];
+
+    snapshot.forEach(doc => {
+        const pathSegments = (doc.ref && doc.ref.path ? doc.ref.path : '').split('/');
+        const docAppId = pathSegments.length >= 2 ? pathSegments[1] : null;
+        if (docAppId && docAppId !== appId) return;
+
+        const data = doc.data();
+        if (!data || typeof data !== 'object') return;
+
+        const createdAtMs = toEpochMs(data.createdAt || data.updatedAt || (data.fase1 && data.fase1.completedAt));
+        if (start && createdAtMs !== null && createdAtMs < start.getTime()) return;
+        if (end && createdAtMs !== null && createdAtMs > end.getTime()) return;
+
+        if (!matchesServiceType(data.encounterType, serviceType)) return;
+        if (!matchesPatient(data, patientId)) return;
+        if (!matchesDoctor(data, doctorId)) return;
+
+        const userId = data.userId || (pathSegments.length >= 4 ? pathSegments[3] : '');
+        const fields1 = (data.fase1 && data.fase1.fields) || {};
+        const fields2 = (data.fase2 && data.fase2.fields) || {};
+
+        historias.push({
+            id: doc.id,
+            userId,
+            pacienteNombre: [fields1.nombre, fields1.apellidos].filter(Boolean).join(' ') || data.userName || 'N/A',
+            cedula: fields1.cedula || data.userCedula || '',
+            encounterType: data.encounterType || 'emergency_direct',
+            fecha: toIsoString(data.createdAt || data.date || (data.fase1 && data.fase1.completedAt) || data.updatedAt),
+            medico: (data.fase2 && (data.fase2.filledByName || data.fase2.filledBy)) ||
+                    (data.fase1 && (data.fase1.filledByName || data.fase1.filledBy)) || '',
+            diagnosticoFinal: fields2.diagnosticoFinal || fields2.diagnostico || fields1.diagnostico || '',
+            status: data.status || ((data.fase2 && data.fase2.isLocked) ? 'completed' : (data.fase1 && data.fase1.isLocked) ? 'completed_phase1' : 'in_progress'),
+            fase1Locked: data.fase1 && data.fase1.isLocked === true,
+            fase2Locked: data.fase2 && data.fase2.isLocked === true,
+            raw: data
+        });
+    });
+
+    historias.sort((a, b) => {
+        const tA = a.fecha ? new Date(a.fecha).getTime() : 0;
+        const tB = b.fecha ? new Date(b.fecha).getTime() : 0;
+        return tB - tA;
+    });
+
+    return historias;
+};
+
+// ▶ ENDPOINT: Reporte Detallado (Auditoría y Detalle)
+// Filtros opcionales: startDate, endDate, patientId, doctorId, serviceType.
+app.get('/api/reports/detailed', checkOperatorRole(['medico', 'supervisormaster', 'administrador', 'supervisor']), async (req, res) => {
+    try {
+        const { startDate, endDate, patientId, doctorId, serviceType } = req.query;
+        const historias = await fetchReportHistories({ startDate, endDate, patientId, doctorId, serviceType });
+
+        res.status(200).json({
+            success: true,
+            total: historias.length,
+            historias: historias.map(({ raw, ...meta }) => meta)
+        });
+    } catch (error) {
+        console.error('❌ Error en reporte detallado:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ▶ ENDPOINT: Reporte Analítico (Dashboard BI)
+// KPIs + diagnósticos top 5 (CIE-10), distribución por género, grupos etarios
+// y volumen operativo diario en formato estructurado para gráficos.
+app.get('/api/reports/analytics', checkOperatorRole(['medico', 'supervisormaster', 'administrador', 'supervisor']), async (req, res) => {
+    try {
+        const { startDate, endDate, patientId, doctorId, serviceType } = req.query;
+        const historias = await fetchReportHistories({ startDate, endDate, patientId, doctorId, serviceType });
+
+        const uniquePatients = new Set();
+        const genderCount = { masculino: 0, femenino: 0, otro: 0, 'No especificado': 0 };
+        const ageCount = { '0-17': 0, '18-29': 0, '30-44': 0, '45-59': 0, '60+': 0, 'Desconocido': 0 };
+        const diagnoseMap = new Map();
+        const volumeMap = new Map();
+
+        // Volumen: ceros para los últimos 30 días (para que el gráfico de línea
+        // de barras se estire completo y no quede con huecos)
+        const now = new Date();
+        for (let i = 29; i >= 0; i -= 1) {
+            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+            volumeMap.set(d.toISOString().slice(0, 10), 0);
+        }
+
+        historias.forEach(h => {
+            const raw = h.raw || {};
+            if (h.userId) uniquePatients.add(h.userId);
+
+            // Género (defensivo: campos genero/sexo, valores M/F/masculino/femenino)
+            const genderRaw = String((raw.fase1 && (raw.fase1.fields.genero || raw.fase1.fields.sexo)) || '').trim().toLowerCase();
+            let genderKey = 'No especificado';
+            if (['m', 'masculino', 'male', 'hombre', 'h'].includes(genderRaw)) genderKey = 'masculino';
+            else if (['f', 'femenino', 'female', 'mujer'].includes(genderRaw)) genderKey = 'femenino';
+            else if (genderRaw && genderRaw !== 'no especificado') genderKey = 'otro';
+            genderCount[genderKey] += 1;
+
+            // Grupo etario (fecha nacimiento vs fecha de la atención)
+            const birthMs = toEpochMs(raw.fase1 && raw.fase1.fields.fechaNacimiento);
+            if (birthMs !== null) {
+                const birthDate = new Date(birthMs);
+                const refMs = h.fecha ? new Date(h.fecha).getTime() : now.getTime();
+                const ref = isNaN(refMs) ? now : new Date(refMs);
+                let age = ref.getFullYear() - birthDate.getFullYear();
+                const m = ref.getMonth() - birthDate.getMonth();
+                if (m < 0 || (m === 0 && ref.getDate() < birthDate.getDate())) age -= 1;
+                age = Math.max(age, 0);
+                if (age <= 17) ageCount['0-17'] += 1;
+                else if (age <= 29) ageCount['18-29'] += 1;
+                else if (age <= 44) ageCount['30-44'] += 1;
+                else if (age <= 59) ageCount['45-59'] += 1;
+                else ageCount['60+'] += 1;
+            } else {
+                ageCount['Desconocido'] += 1;
+            }
+
+            // Diagnósticos recurrentes (prioridad: diagnóstico final de Fase 2)
+            const rawFields2 = (raw.fase2 && raw.fase2.fields) || {};
+            const rawFields1 = (raw.fase1 && raw.fase1.fields) || {};
+            const dx = String(rawFields2.diagnosticoFinal || rawFields2.diagnostico || rawFields1.diagnostico || '').trim();
+            if (dx) diagnoseMap.set(dx, (diagnoseMap.get(dx) || 0) + 1);
+
+            // Volumen operativo por día (clave UTC para determinismo)
+            const fechaMs = h.fecha ? new Date(h.fecha).getTime() : null;
+            if (fechaMs !== null && !isNaN(fechaMs)) {
+                const key = new Date(fechaMs).toISOString().slice(0, 10);
+                volumeMap.set(key, (volumeMap.get(key) || 0) + 1);
+            }
+        });
+
+        const topDiagnoses = Array.from(diagnoseMap.entries())
+            .map(([diagnosis, count]) => ({ diagnosis, count }))
+            .sort((a, b) => b.count - a.count || String(a.diagnosis).localeCompare(String(b.diagnosis)))
+            .slice(0, 5);
+
+        const genderDistribution = Object.entries(genderCount).map(([gender, count]) => ({ gender, count }));
+        const ageDistribution = Object.entries(ageCount).map(([ageGroup, count]) => ({ ageGroup, count }));
+        const volumeByDate = Array.from(volumeMap.entries())
+            .map(([date, count]) => ({ date, count }))
+            .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+        const completedCount = historias.filter(h => {
+            if (String(h.encounterType).includes('telemedicine')) return h.fase1Locked;
+            return h.fase1Locked && h.fase2Locked;
+        }).length;
+
+        res.status(200).json({
+            success: true,
+            analytics: {
+                kpis: {
+                    totalAtenciones: historias.length,
+                    pacientesUnicos: uniquePatients.size,
+                    conDiagnostico: historias.filter(h => h.diagnosticoFinal).length,
+                    completadas: completedCount
+                },
+                topDiagnoses,
+                genderDistribution,
+                ageDistribution,
+                volumeByDate
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error en reporte analítico:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Endpoint para validar afiliación
 app.post('/api/check-affiliation', async (req, res) => {
     const { cedula } = req.body;

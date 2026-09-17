@@ -222,7 +222,10 @@ class MockCollectionGroup extends MockQuery {
         let docs = [];
         for (const [docPath, data] of Object.entries(this._fs._docs)) {
             const parts = docPath.split('/');
-            if (parts.length % 2 === 0) {
+            // Las rutas de DOCUMENTO de Firestore tienen número par de segmentos
+            // (collection/doc/collection/doc/...). El mock solo almacena documentos,
+            // por lo que se descartan rutas impares (colecciones).
+            if (parts.length % 2 !== 0) {
                 continue;
             }
             if (parts[parts.length - 2] === this._name) {

@@ -1,9 +1,9 @@
 # progress.md - Bitácora de Progreso del Bucle Autónomo
 
 ## Estado Actual
-* **Fase:** Recuperación de Sesión y Control de Cierre en Telemedicina.
-* **Bucle Activo:** `telemedicine-session-recovery-loop.md`
-* **Último Estado:** COMPLETADO — Reingreso a sesiones `in-progress` con advertencia de concurrencia (modal "Sí, continuar/retomar" / "Cancelar"), botón ✕ de salida en el chat que no cierra la historia médica, y trazabilidad multi-médico en el backend (`lastOperatorId`/`lastOperatorName` + lista `operators`). Frontend reconstruido y `npm test` con **exit code 0** (30/30 tests PASSED, 5 suites).
+* **Fase:** Módulo Profesional de Reportes e Inteligencia Médica.
+* **Bucle Activo:** `analytics-reports-loop.md`
+* **Último Estado:** COMPLETADO — Dashboard analítico y reportes detallados habilitados: endpoints `/api/reports/detailed` y `/api/reports/analytics` en backend (filtros por rango de fechas, cédula/paciente, médico y tipo de servicio + KPIs, diagnósticos top 5, distribución por género/grupos etarios y volumen operativo), componente `ReportesHistoriasMedicas.jsx` reconstruido con pestañas Auditoría y Detalle / Dashboard BI, exportación CSV/Excel e impresión gerencial en PDF. `npm test` con **exit code 0** (40/40 tests PASSED, 6 suites).
 
 ---
 
@@ -224,3 +224,31 @@
 * **Notas:**
   * El test nuevo se copió al contenedor con `docker cp` (`/app/tests/` no está bind-mounted); quedará incluido en un futuro rebuild desde el contexto `./backend`.
   * El cierre formal de la atención sigue exigiéndose vía "Finalizar Chat" (exige Fase 1 guardada en el backend, `HISTORY_INCOMPLETE`) — el botón ✕ es solo una **salida** sin cierre, según especificación.
+
+### [BEAT 9] - Bucle analytics-reports-loop.md: Reportes Detallados y Dashboard Analítico (BI)
+* **Fecha/Hora:** 2026-09-17
+* **Acción Principal:**
+  * **Backend** (`backend/src/server.js`):
+    * **A. Endpoint `/api/reports/detailed`** (protegido con `checkOperatorRole(['medico','supervisormaster','administrador','supervisor'])`): filtros opcionales `startDate`, `endDate`, `patientId` (Cédula/Paciente: coincide con `userId`, `fase1.fields.cedula` o nombre), `doctorId` (coincide con `filledBy`/`filledById`/`filledByName` de Fase 1 o Fase 2) y `serviceType` (`telemedicina` | `emergencia` | `todos`). Normalización de fechas: un `startDate` 'YYYY-MM-DD' se interpreta como inicio de día 00:00:00 y un `endDate` como fin de día 23:59:59.999 (evita devolver 0 registros por rangos amplios). Recorre todas las subcolecciones `medicalHistory` vía `collectionGroup` → retorna `{ success, total, historias }` con metadatos enriquecidos (id, userId, pacienteNombre, cedula, encounterType, fecha ISO, medico, diagnosticoFinal, status, fase1Locked, fase2Locked) ordenados por fecha descendente y **sin** la data cruda anidada.
+    * **B. Endpoint `/api/reports/analytics`** (misma protección y filtros): calcula KPIs (`totalAtenciones`, `pacientesUnicos`, `conDiagnostico`, `completadas`), `topDiagnoses` (Top 5 CIE-10 recurrente), `genderDistribution` (femenino/masculino/otro/No especificado, defensivo sobre `fase1.fields.genero|sexo`), `ageDistribution` (0-17/18-29/30-44/45-59/60+/Desconocido desde `fechaNacimiento` vs fecha de atención) y `volumeByDate` (días con ceros para los últimos 30 días + fechas con actividad). Retorno estructurado para gráficos y tablas ejecutivas.
+    * **Mock `firebase-admin`** (`backend/__mocks__/firebase-admin.js`): se corrigió la paridad del `collectionGroup` que descartaba las rutas de documento (número par de segmentos en Firestore: collection/doc/collection/doc). Antes `parts.length % 2 === 0` hacía `continue` y el grupo de colecciones nunca devolvía documentos; ahora se descartan solo las impares (colecciones). Sin impacto en las 30 pruebas previas.
+  * **Suite de pruebas** (`backend/tests/reports.test.js`, 10 tests): 403 sin cabeceras en ambos endpoints; 200 con lista vacía; orden descendente y metadatos sin `raw`; filtro por rango de fechas con normalización de día completo; filtro por `serviceType` (telemedicina excluye emergencia directa y viceversa); filtro por `patientId` (userId y cédula) y `doctorId`; KPIs/`topDiagnoses`/género/grupos etarios/volumen con fixtures sembradas; reutilización de filtros en analytics.
+  * **Frontend** (`frontend/src/components/ReportesHistoriasMedicas.jsx`):
+    * Reescrito para consumir los endpoints nuevos con rutas relativas `/api/reports/...` y cabeceras duales (`x-operator-role`/`x-operator-id` del spec + `x-operator-rol`/`x-operator-uid` que lee `checkOperatorRole`), resolviendo el problema de **búsquedas con 0 registros** (el listado anterior solo consultaba las historias del propio médico en Firestore; ahora `collectionGroup` del backend devuelve las 424 atenciones reales de la plataforma).
+    * **Pestañas del módulo:** "📋 Auditoría y Detalle" (filtros avanzados: fecha inicio/fin, cédula/paciente, médico, tipo de servicio + tabla interactiva con "Ver" y "PDF" por fila + doble clic que abre el detalle) y "📈 Dashboard Estadístico / BI" (tarjetas de KPIs con gradientes, barras de "Diagnósticos Recurrentes Top 5", gráfico de barras de "Volumen Operativo últimos 30 días", cintas de distribución por género y barras de grupos etarios — todo CSS puro, sin librerías extra).
+    * **Exportación profesional:** botón "⬇️ Exportar CSV/Excel" (CSV separado por `;` con BOM UTF-8, compatible con Excel) y "🖨️ Imprimir Reporte (PDF)" (vista de impresión gerencial con filtros aplicados y total de atenciones). PDF individual por historia vía `html2pdf` sobre el modal (resumen + Fase 1 y Fase 2 completas cargadas con `GET /api/medical-history/:id?userId=...`).
+    * **Estados vacíos y carga:** spinners mientras se consulta el servidor y mensajes explicativos ("No se encontraron coincidencias... Amplía el rango de fechas o limpia los filtros") cuando la búsqueda no devuelve resultados.
+  * **Despliegue:** `docker compose restart backend` (carga el `server.js` bind-mount con los 2 endpoints nuevos) y `docker compose build frontend && docker compose up -d frontend` (bundle `index-X3gOAKSe.js` contiene "Auditoría y Detalle", "Exportar CSV/Excel", "Imprimir Reporte", "Diagnósticos Recurrentes", `/api/reports/detailed` y `/api/reports/analytics`). Tests y mock copiados al contenedor con `docker cp` (no están bind-mounted).
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 6 passed, 6 total
+  Tests:       40 passed, 40 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "npm test"` → **EXIT CODE 0** ✅
+  Probes en vivo:
+  * Backend directo: `/api/reports/detailed` → **200** `{ success: true, total: 424 }`; `/api/reports/analytics` → **200** `{ kpis: { totalAtenciones: 424, pacientesUnicos: 11, conDiagnostico: 96, completadas: 418 }, topDiagnoses: [...] }` (11 pacientes únicos explican el "0 registros" anterior: cada médico solo consultaba su subcolección).
+  * Vía proxy del frontend (`http://127.0.0.1/api/reports/...` en `server13_1-frontend-1`): **200** con KPIs reales; sin cabeceras de operador → **403**.
+* **Notas:**
+  * El `collectionGroup` del mock se corrigió para reconocer rutas de documento (paridad par); las 30 pruebas heredadas no usaban `collectionGroup`, por lo que no hubo regresiones.
+  * `npm test` solo valida el backend (exit code 0); el frontend se validó por build Docker autoritativo (`npm ci + vite build`).
+  * Los endpoints admiten múltiples roles operativos (medico, administrador, supervisor) aunque la pestaña en `App.jsx` solo se renderiza para `medico` (no se modificó `App.jsx` por política de aislamiento).

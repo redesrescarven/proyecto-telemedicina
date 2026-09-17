@@ -12,3 +12,4 @@ backend/config/serviceAccountKey.json
 certs/
 *.crt
 *.key
+docker-compose.yml
