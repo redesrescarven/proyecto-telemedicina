@@ -1,0 +1,29 @@
+{
+  "name": "boton-emergencia-backend",
+  "version": "1.0.0",
+  "description": "Backend para la plataforma web de Botón de Emergencia",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest --detectOpenHandles --forceExit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.7.0",
+    "form-data": "^4.0.5",
+    "node-fetch": "^2.7.0",
+    "nodemailer": "^6.10.1",
+    "oracledb": "^6.3.0",
+    "pdfkit": "^0.18.0",
+    "proxy-agent": "^8.0.1",
+    "puppeteer": "^24.43.1",
+    "socks": "^2.8.9"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.4",
+    "supertest": "^7.0.0"
+  }
+}

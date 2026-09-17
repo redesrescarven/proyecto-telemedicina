@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.env
+oracle-client/
+*.so
+*.so.*
+*.zip
+*.tar.gz
+*.log
+backend/config/serviceAccountKey.json
+certs/
+*.crt
+*.key

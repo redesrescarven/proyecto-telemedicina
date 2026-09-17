@@ -1,0 +1,54 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    expose:
+      - "4000"
+    ports:
+      - "4001:4000"  # ← Exponemos el puerto 4001 para hacer pruebas directas al backend en 13_1
+    env_file:
+      - ./backend/.env
+    environment:
+      - NODE_ENV=development
+      - ORACLE_CLIENT_LIB_DIR=/opt/oracle/instantclient
+      - LD_LIBRARY_PATH=/opt/oracle/instantclient:${LD_LIBRARY_PATH}
+      - APP_ID=default-app-id
+    volumes:
+      - ./oracle-client/instantclient:/opt/oracle/instantclient:ro
+      - ./backend/src:/app/src:rw        # ← IMPORTANTE: :rw para que OpenCode pueda guardar cambios en código
+      - ./backend/config:/app/config:ro
+      - /app/node_modules
+    restart: always
+    networks:
+      - app-network
+
+  proxy:
+    image: nginx:alpine
+    ports:
+      - "81:80"       # ← Cambiado de 80 a 81 para no chocar con el QA principal
+      - "8444:443"    # ← Cambiado de 8443 a 8444 para no chocar con el HTTPS de QA
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt/live/telesalud-rescarven.ddns.net/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
+      - /etc/letsencrypt/live/telesalud-rescarven.ddns.net/privkey.pem:/etc/nginx/certs/privkey.pem:ro
+    restart: always
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+

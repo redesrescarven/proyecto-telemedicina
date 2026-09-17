@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="https://placehold.co/32x32/FF0000/FFFFFF?text=BE" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Aplicación web para la gestión de emergencias Botón de Emergencia"
+    />
+    <title>Botón de Emergencia - Gestión</title>
+    <!-- Incluye Tailwind CSS directamente para desarrollo rápido -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Configuración de Tailwind
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'rescarven-blue': '#1976d2',
+              'rescarven-red': '#d32f2f',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      /* Asegura que la fuente Inter se use en toda la aplicación */
+      body {
+        font-family: 'Inter', sans-serif;
+      }
+    </style>
+</head>
+<body>
+    <noscript>Necesitas habilitar JavaScript para ejecutar esta aplicación.</noscript>
+    <div id="root"></div>
+    
+    <script type="module" src="/src/index.jsx"></script>
+</body>
+</html>
+
