@@ -26,6 +26,7 @@ services:
       - ORACLE_CLIENT_LIB_DIR=/opt/oracle/instantclient
       - LD_LIBRARY_PATH=/opt/oracle/instantclient:${LD_LIBRARY_PATH}
       - APP_ID=default-app-id
+      - EXTERNAL_API_KEY=${EXTERNAL_API_KEY}
     volumes:
       - ./oracle-client/instantclient:/opt/oracle/instantclient:ro
       - ./backend/src:/app/src:rw        # ← IMPORTANTE: :rw para que OpenCode pueda guardar cambios en código

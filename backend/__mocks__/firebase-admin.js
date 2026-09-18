@@ -306,12 +306,23 @@ firestoreFn.FieldValue = {
 };
 firestoreFn.Timestamp = MockTimestamp;
 
+const authInstance = {
+    createUser: jest.fn(async ({ email, displayName }) => ({
+        uid: `test_${(email || 'user').replace(/[^a-zA-Z0-9]/g, '_')}`,
+        email: email || null,
+        displayName: displayName || null
+    })),
+    deleteUser: jest.fn(async (uid) => ({ uid })),
+    updateUser: jest.fn(async (uid, props) => ({ uid, ...props }))
+};
+
 module.exports = {
     initializeApp: jest.fn(() => ({})),
     credential: {
         cert: jest.fn(() => ({}))
     },
     firestore: firestoreFn,
+    auth: jest.fn(() => authInstance),
     FieldValue: firestoreFn.FieldValue,
     Timestamp: MockTimestamp,
     __firestore: firestoreInstance,

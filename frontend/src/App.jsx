@@ -590,17 +590,40 @@ const App = () => {
       return;
     }
     try {
-      const userProfileRef = doc(db, `artifacts/${appId}/users/${userIdToUpdate}/profile/data`);
-      await updateDoc(userProfileRef, {
-        isActive: newIsActiveStatus,
-        updatedBy: user.uid,
-        updatedByName: operatorName,
-        updatedAt: new Date(),
+      // ✅ NUEVO (qa-users-crud-and-mandatory-diagnostic-loop): la API deshabilita/habilita
+      //    efectivamente la cuenta en Firebase Auth y sincroniza el perfil en Firestore.
+      const response = await fetch(`/api/admin/users/${encodeURIComponent(userIdToUpdate)}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Rol': operatorRole,
+          'X-Operator-Uid': user.uid,
+        },
+        body: JSON.stringify({ isActive: newIsActiveStatus }),
       });
-      setToast({ message: `Cuenta ${newIsActiveStatus ? 'activada' : 'desactivada'}`, type: 'success' });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || 'No se pudo actualizar el estado.');
+      }
+      setToast({ message: `Cuenta ${newIsActiveStatus ? 'activada' : 'inactivada/deshabilitada'}`, type: 'success' });
       setUserListRefreshTrigger(prev => prev + 1);
     } catch (error) {
-      setToast({ message: `Error: ${error.message}`, type: 'error' });
+      console.error('Error actualizando estado (API):', error);
+      // Fallback: actualización directa en Firestore si la API no está disponible.
+      try {
+        const userProfileRef = doc(db, `artifacts/${appId}/users/${userIdToUpdate}/profile/data`);
+        await updateDoc(userProfileRef, {
+          isActive: newIsActiveStatus,
+          status: newIsActiveStatus ? 'active' : 'inactive',
+          updatedBy: user.uid,
+          updatedByName: operatorName,
+          updatedAt: new Date(),
+        });
+        setToast({ message: `Cuenta ${newIsActiveStatus ? 'activada' : 'desactivada (sin Auth)'}`, type: 'success' });
+        setUserListRefreshTrigger(prev => prev + 1);
+      } catch (fallbackError) {
+        setToast({ message: `Error: ${fallbackError.message}`, type: 'error' });
+      }
     }
   };
 
@@ -949,6 +972,8 @@ const App = () => {
             db={db} 
             appId={appId} 
             setToast={setToast} 
+            user={user}
+            operatorRole={operatorRole}
           />
         )}
 

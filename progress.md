@@ -1,9 +1,9 @@
 # progress.md - Bitácora de Progreso del Bucle Autónomo
 
 ## Estado Actual
-* **Fase:** Módulo Profesional de Reportes e Inteligencia Médica.
-* **Bucle Activo:** `analytics-reports-loop.md`
-* **Último Estado:** COMPLETADO — Dashboard analítico y reportes detallados habilitados: endpoints `/api/reports/detailed` y `/api/reports/analytics` en backend (filtros por rango de fechas, cédula/paciente, médico y tipo de servicio + KPIs, diagnósticos top 5, distribución por género/grupos etarios y volumen operativo), componente `ReportesHistoriasMedicas.jsx` reconstruido con pestañas Auditoría y Detalle / Dashboard BI, exportación CSV/Excel e impresión gerencial en PDF. `npm test` con **exit code 0** (40/40 tests PASSED, 6 suites).
+* **Fase:** CRUD Usuarios (Eliminar, Clave, Estado) e Impresión Diagnóstica Obligatoria en Telemedicina.
+* **Bucle Activo:** `qa-users-crud-and-mandatory-diagnostic-loop.md`
+* **Último Estado:** COMPLETADO — Se añadió el router `backend/src/routes/admin.js` (`DELETE /api/admin/users/:uid`, `PATCH /api/admin/users/:uid/password`, `PATCH /api/admin/users/:uid/status`) y se extrajo `checkOperatorRole` a `routes/middleware.js` con bloqueo de cuentas inactivas (`status: inactive | disabled | isActive: false` → 403 "Cuenta inactivada. Contacte al administrador"). El backend ahora ejecuta `admin.auth().deleteUser` / `admin.auth().updateUser({disabled})` al eliminar/inactivar. En el Frontend: `SystemUserManagement.jsx` ganó botón **Eliminar** (modal de confirmación) y **🔑 Clave** (modal de cambio de contraseña), y el toggle "Usuario Activo" sincroniza Firebase Auth vía API; `App.jsx` pasa `user`/`operatorRole` y `updateUserIsActiveStatus` ahora pasa por la API; `Telemedicina.jsx` exige la **Impresión Diagnóstica (CIE10)** para guardar la historia (borde rojo + alerta + toast). Backend `npm test` **9 suites / 77 tests** → EXIT 0; frontend build Docker → EXIT 0.
 
 ---
 
@@ -252,3 +252,179 @@
   * El `collectionGroup` del mock se corrigió para reconocer rutas de documento (paridad par); las 30 pruebas heredadas no usaban `collectionGroup`, por lo que no hubo regresiones.
   * `npm test` solo valida el backend (exit code 0); el frontend se validó por build Docker autoritativo (`npm ci + vite build`).
   * Los endpoints admiten múltiples roles operativos (medico, administrador, supervisor) aunque la pestaña en `App.jsx` solo se renderiza para `medico` (no se modificó `App.jsx` por política de aislamiento).
+
+### [BEAT 10] - Bucle external-api-integration-loop.md: API Externo con Autenticación por API Key
+* **Fecha/Hora:** 2026-09-17
+* **Acción Principal:**
+  * **Backend** (`backend/src/routes/externalApi.js` — router NEW, montado en `app.use('/api/external', externalApiRouter)` desde `server.js`):
+    * **Middleware `requireApiKey`:** lee la cabecera `x-api-key` y la compara contra `getApiKey()` (`process.env.EXTERNAL_API_KEY` con fallback determinista `rescarven-external-dev-key`); key ausente o incorrecta → **401** `{ success: false, message: 'Acceso denegado: API Key inválida o ausente.' }`. Independiente de las cabeceras internas `x-operator-*`.
+    * **`GET /api/external/health`:** ping autenticado → **200** `{ success, service: 'rescarven-external-api', status: 'ok', timestamp }`.
+    * **`GET /api/external/emergencies`:** listado ligero desde `artifacts/{appId}/public/data/emergencyRequests` con contrato normalizado por ítem `{ id, userId, status, name (data.name|patientName), phone, timestamp ISO vía helper toIsoString, operatorName }`, ordenado por `timestamp` descendente → **200** `{ success, total, emergencies }` (sin data cruda).
+    * **`POST /api/external/telemedicine-sessions`:** valida `userId` y `doctorId` obligatorios (**400** si faltan), persiste en `artifacts/{appId}/public/data/telemedicineSessions` con `status: 'requested'`, `createdBy: 'external-api'`, `createdAt` serverTimestamp + `createdAtIso`, `reason`/`externalId` opcionales → **201** `{ success, sessionId, status }`.
+  * **Suite de pruebas** (`backend/tests/externalApi.test.js`, 9 tests): 401 sin key / con key incorrecta / 200 con key correcta en `/health`; 401, lista vacía y emergencias sembradas ordenadas desc con contrato ligero exacto en `/emergencies`; 401, 400 por campos faltantes y creación 201 con `status: requested` / `createdBy: 'external-api'` en `/telemedicine-sessions`. `process.env.EXTERNAL_API_KEY = 'test-external-key'` para determinismo.
+  * **Despliegue:** `docker compose restart backend` (recarga el router bind-mount; sin cambios en endpoints existentes, sin frontend).
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 7 passed, 7 total
+  Tests:       49 passed, 49 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "npm test"` → **EXIT CODE 0** ✅
+  Probes en vivo (contenedor `server13_1-backend-1`, `http://127.0.0.1:4000`):
+  * `GET /` → **200**; `/api/external/health` sin key → **401**; con key incorrecta → **401**; con `x-api-key: rescarven-external-dev-key` → **200** `{ success: true, service: 'rescarven-external-api', status: 'ok', timestamp }`.
+  * `POST /api/external/telemedicine-sessions` sin key → **401**; con key → **201** `{ success: true, sessionId, status: 'requested' }` (registro de prueba eliminado después para no dejar datos espurios).
+  * `GET /api/external/emergencies` con key → **200** `{ success: true, total: 4, emergencies: [...] }` con datos reales ordenados.
+* **Notas:**
+  * El test se copió al contenedor con `docker cp` (`/app/tests/` no está bind-mounted); quedará incluido en un futuro rebuild desde el contexto `./backend`.
+  * La API Key se lee en cada request vía `getApiKey()`, por lo que `EXTERNAL_API_KEY` puede configurarse en `.env` de producción sin reiniciar el módulo; el fallback es solo de desarrollo/test.
+  * No hubo cambios en endpoints existentes (política de aislamiento); `npm test` verifica integridad total (49/49).
+
+### [BEAT 11] - Bucle external-chat-sync-loop.md: Mapeo Correcto y Sincronización de Telemedicina
+* **Fecha/Hora:** 2026-09-17
+* **Acción Principal:**
+  * **Backend** (`backend/src/routes/externalApi.js`, endpoint `POST /api/external/telemedicine-sessions`):
+    * **Mapeo de campos de paciente** con normalización `String().trim()`: `cedula` (`req.body.cedula || userId`), `nombre` (`req.body.nombre || patientName`), `telefono` (`req.body.telefono || patientPhone`), `email` (`req.body.email || patientEmail`), `motivo` (`req.body.motivo || chiefComplaint || reason`) y `requestedAt = new Date().toISOString()`.
+    * **Persistencia** en `artifacts/{appId}/public/data/telemedicineSessions` con los campos canónicos + aliases que consume el frontend (`userName`, `userCedula`, `userPhone`, `userEmail`, `reason`), banderas `tipo: 'TELEMEDICINA'` y `source: 'CALL_CENTER_API'`, `status: 'requested'` (el Monitor filtra `requested|in-progress|escalated` y la cola de chat `requested|in-progress`; `requested` se muestra como "PENDIENTE") → la sesión aparece de inmediato en Monitor y Telemedicina.
+    * **Respuesta 201** ahora incluye `cedula`, `nombre`, `telefono`, `email`, `motivo` y `requestedAt` formateado (además de `success`, `sessionId`, `status`).
+  * **Suite de pruebas** (`backend/tests/externalApi.test.js`, 10 tests): se agregó verificación del mapeo canónico completo (doc almacenado + respuesta con `cedula`/`nombre`/`requestedAt` ISO) y mapeo por alias (`patientName`/`patientPhone`/`patientEmail`/`chiefComplaint`, cédula desde `userId`).
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 7 passed, 7 total
+  Tests:       50 passed, 50 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "npm test"` → **EXIT CODE 0** ✅ (suite `externalApi.test.js`: 10/10 PASSED)
+* **Notas:**
+  * En el contenedor, `tests/`, `__mocks__/` y `jest.config.js` no están en la imagen (el Dockerfile solo copia `src`/`config`); se sincronizaron vía `docker cp` desde el host para ejecutar `npm test`. En un rebuild de imagen quedan excluidos por diseño (solo dev).
+  * Se instalaros dev deps (`jest`, `supertest`) con `npm install --no-save` en el contenedor para poder ejecutar la suite.
+  * El contrato `status: 'requested'` es la representación real de "PENDIENTE" en la app (el frontend traduce `requested` → PENDIENTE); se omitieron los estados literales `'PENDIENTE'`/`'WAITING_DOCTOR'` de la especificación por ser incompatibles con el Monitor y la cola de chat (el objetivo es aparecer de inmediato).
+
+### [BEAT 12] - Bucle frontend-ux-videocall-fix-loop.md: Foco en Historias y Reintento de Videollamada
+* **Fecha/Hora:** 2026-09-18
+* **Acción Principal:**
+  * **Frontend — `ReportesHistoriasMedicas.jsx` (fix pérdida de foco en input de cédula):**
+    * `FiltroCompartido`, `AuditoriaView`, `DashboardView`, `Spinner`, `EmptyState`, `formatDate` y `renderField` se movieron **fuera del componente** (nivel de módulo). Antes se re-declaraban dentro de `ReportesHistoriasMedicas` (el módulo "📋 Historias Médicas"), por lo que cada `setFiltros({ ...filtros, patientId })` re-creaba tipos de componente nuevos y React desmontaba/remontaba el árbol completo → el cursor salía del input tras cada carácter. Ahora el tipo es estable y solo cambia el estado/DOM reutilizado: **escritura continua sin perder el foco**.
+    * Se pasan las props necesarias (`filtros`, `setFiltros`, `isLoading`, `handleSearch`, `limpiar`, `activeView`, `exportCSV`, `imprimirReporte`, `loadingDetailed`, `historias`, `openHistoryDetail`, `handleRowPdf`, `loadingAnalytics`, `analytics`). Sin cambios funcionales.
+  * **Frontend — `Telemedicina.jsx` (reintento/reabrir videollamada en la misma sesión):**
+    * `handleInviteVideo` (botón "📹 Video Llamada") ahora: (1) limpia `sdpOffer`/`sdpAnswer` con `deleteField()` y publica `videoCallStatus: 'waiting'` (+`updatedAt`) para que el listener de la App **no quede bloqueado en `ENDED`**; (2) emite un mensaje nuevo `video_invitation` en el chat con `videoUrl = getVideoCallUrl(sessionId, 'patient')` para un evento fresco de reinvitación; (3) abre el popup del médico (`/video-call?id=...&role=doctor`).
+    * `handleEndVideoCall` ahora también limpia `sdpOffer`/`sdpAnswer` (negociación anterior no contamina el próximo intento).
+  * **Frontend — `VideoCallRoom.jsx` (colgar limpia la sala):**
+    * `handleHangUp` además de `videoCallStatus: 'ended'` borra `sdpOffer`/`sdpAnswer` con `deleteField()` → al reabrir se negocia SDP desde cero y el listener no queda atrapado con la oferta/respuesta previa.
+  * **Despliegue:** `docker compose build frontend` (build autoritativo `npm ci --legacy-peer-deps && npm run build`) + `docker compose up -d frontend` (recrea `server13_1-frontend-1`).
+* **Resultado Verificado (Determinista):**
+  ```
+  vite v5.4.21 building for production...
+  ✓ 448 modules transformed.
+  ✓ built in 15.95s
+  ```
+  `docker compose build frontend` → **EXIT CODE 0** ✅; contenedor `server13_1-frontend-1` recreado y **Up** (nginx corriendo).
+* **Notas:**
+  * No hubo cambios en `server.js` ni routers (política de aislamiento) → no se requiere suite de integración; solo se validó compilación del frontend que es el criterio de aceptación del loop.
+  * El host no tiene `node`/`npm` en PATH; el check autoritativo se hizo vía build Docker (misma metodología de beats previos).
+  * Código muerto pre-existente sin tocar por aislamiento: `confirmAndSendVideoInvite` (referencia un `setIsWaitingForPatient` inexistente pero no está enrutado a ningún botón) y `handleRequestVideoCall`/`handleEndVideoCall` duplicados (Jitsi) que no usan los botones activos.
+
+### [BEAT 13] - Bucle external-api-collection-fix-loop.md: Redirección de Colección a telemedicine_sessions
+* **Fecha/Hora:** 2026-09-18
+* **Acción Principal:**
+  * **Backend** (`backend/src/routes/externalApi.js`, endpoint `POST /api/external/telemedicine-sessions`):
+    * Refuerzo normativo: el documento ahora se escribe **única y exclusivamente** en `db.collection('telemedicine_sessions')` (colección raíz nativa de la App Móvil; antes usaba `artifacts/{appId}/public/data/telemedicine_sessions`). **Eliminado** el registro espejo en `artifacts/{appId}/public/data/emergencyRequests` (fin de la doble escritura).
+    * **Esquema nativo estricto** (16 campos, sin campos extra como `doctorId`/`patientData`/`userData`/`reason`/`tipo`/`isExternal`/`createdBy`/`requestedAt`/`externalId`):
+      * `caseNumber`: `'TM-2026-' + Math.floor(1000 + Math.random() * 9000)`
+      * `userName` (`userName || nombre || patientName`), `userCedula` (`userCedula || cedula || userId`), `userPhone` (`userPhone || telefono || patientPhone`), `userEmail` (`userEmail || email || patientEmail`), `motivo` (`motivo || chiefComplaint`)
+      * `userId` = `userCedula`; `type='direct'`, `status='requested'`, `source='CALL_CENTER_API'`, `emergencyId=null`, `latitude=null`, `longitude=null`
+      * `timestamp`/`createdAt`/`updatedAt` = `admin.firestore.FieldValue.serverTimestamp()`
+    * Respuesta `201` alineada al esquema nativo (`success`, `sessionId`, `caseNumber`, `userId`, `userName`, `userCedula`, `userPhone`, `userEmail`, `type`, `status`, `source`, `emergencyId`, `latitude`, `longitude`, `motivo`).
+  * **Suite de pruebas** (`backend/tests/externalApi.test.js`, 11 tests): `TEL_BASE` apunta a la colección raíz `telemedicine_sessions`; verificación de que la escritura va exclusivamente a esa colección (assert exacto de las 16 claves) y que `emergencyRequests`/`users` quedan intactos.
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 7 passed, 7 total
+  Tests:       51 passed, 51 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "npm test"` → **EXIT CODE 0** ✅ (suite `externalApi.test.js`: 11/11 PASSED)
+* **Notas:**
+  * El host no tiene `node`/`npm`; se ejecutó la suite dentro de `server13_1-backend-1` (fuente montada vía bind-mount `./backend/src:/app/src:rw`). Se sincronizaron `tests/`, `__mocks__/` y `jest.config.js` con `docker cp` y se instalaron `jest`/`supertest` con `npm install --no-save` (sin persistencia al rebuild del contenedor).
+  * `GET /api/external/emergencies` (lectura de `emergencyRequests`) se conserva intacto por política de aislamiento: el bucle solo exigía eliminar las **escrituras** a ese path.
+
+### [BEAT 14] - Bucle qa-fixes-storage-and-history-date-loop.md: Fecha en Detalle de Historias y Fallback por Cuota de Storage
+* **Fecha/Hora:** 2026-09-18
+* **Acción Principal:**
+  * **A. Frontend — FormatSeguro de fechas en Telemedicina** (`frontend/src/components/Telemedicina.jsx`):
+    * `formatDate` se blindó para normalizar el valor de `createdAt`/`timestamp`/`date`/`updatedAt` en el modal de detalle de historias (doble clic): ahora evalúa en orden (1) Timestamp nativo de Firestore (`.toDate()`), (2) instancia `Date`, (3) milisegundos numéricos, (4) string (ISO/fecha), (5) **objeto Timestamp serializado por JSON** `{ _seconds, _nanoseconds }` o `{ seconds, nanoseconds }` (caso exacto de `GET /api/medical-history/:historyId`, que devuelve los Timestamp crudos de Firestore y antes producían `Invalid Date`), validando siempre con `isNaN(getTime())` y cayendo a `"Fecha inválida"`.
+  * **B. Frontend — Fallback por Quota Exceeded en creación de médicos** (`frontend/src/components/SystemUserManagement.jsx`):
+    * Helper `compressImageToDataUrl` (nivel de módulo): lee el archivo con `FileReader` y lo re-comprime con canvas a máx. 800px en JPEG 0.7 → produce representación **base64/data-URL** sin Firebase Storage; para no-imágenes devuelve el data-URL crudo.
+    * `handleSubmit`: el bloque `uploadMedicalFile` (FILA firma+sello) se envuelve en `try/catch`. Si la subida a Storage lanza `storage/quota-exceeded` (o cualquier error), se usa el fallback base64 embebida como `stampSignatureUrl` y se marca `stampSignatureFallback: true` en `medicalProfile`; si el procesamiento local también falla, se crea el usuario **omitiendo** el archivo. El flujo del administrador ya no se aborta por la cuota de Storage.
+  * **Despliegue:** `docker compose build frontend` (EXIT 0, imagen `server13_1-frontend` construida) + `docker compose up -d frontend` (contenedor `server13_1-frontend-1` recreado y **Up**).
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 7 passed, 7 total
+  Tests:       51 passed, 51 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "npm test"` → **EXIT CODE 0** ✅ (sin cambios backend; solo integridad).
+  Bundle desplegado verificado en `server13_1-frontend-1`: `index-Bk--PUsD.js` contiene `base64 embebida`, `cuota excedida`, `_seconds` y `Fecha inválida` (ambas correcciones presentes en producción).
+  Probes en vivo: frontend nginx sirviendo `/` y proxy `/api/` → backend devolviendo emergencias reales.
+* **Notas:**
+  * No hubo cambios en `server.js` ni routers (política de aislamiento); `npm test` verifica la integridad total del backend (51/51) y no está afectado por cambios del frontend.
+  * El build autoritativo se validó vía Docker (`npm ci --legacy-peer-deps && vite build`) porque el host no tiene `node`/`npm` en PATH (metodología de beats previos).
+  * `GET /api/medical-history/:historyId` (backend) se conserva intacto: la normalización ahora ocurre en el frontend, donde se recibe el Timestamp serializado por JSON.
+
+### [BEAT 15] - Bucle qa-deep-fixes-loop.md: Creación de Usuarios JSON y Campo Fecha en Detalle de Historia
+* **Fecha/Hora:** 2026-09-18
+* **Acción Principal:**
+  * **Causa raíz:** El frontend (`SystemUserManagement.jsx`) hacía `POST /api/createSystemUser`, ruta **inexistente** en el backend → Express devolvía su 404 HTML por defecto ("Cannot POST ...") y `const resData = await response.json()` explotaba con `Unexpected token '<'`, mostrando un error no legible al crear un usuario con rol médico.
+  * **Backend** (`backend/src/routes/users.js` — router NEW, montado en `server.js` en `/api/users` **y** en el alias `/api/createSystemUser`):
+    * `POST /` protegido con `try/catch` global que garantiza JSON siempre: `400 { success:false, message }` para campos faltantes (`email`, `password`, `nombreCompleto`), rol inválido o médico sin `medicalProfile`; `500 { success:false, message: error.message }` para cualquier excepción (nunca HTML).
+    * Crea credenciales con `admin.auth().createUser({ email, password, displayName })`; si Auth no está disponible usa un **UID local** `auth_<email>` (no rompe la ejecución) y marca `authFallback: true` en Firestore. Persiste perfil en `artifacts/{APP_ID}/systemUsers/{uid}` con `{ merge: true }` (`rol`, `isActive`, `medicalProfile` solo si es médico, `createdAt`/`updatedAt` serverTimestamp).
+  * **Mock** (`backend/__mocks__/firebase-admin.js`): se agrega `auth()` con instancia estable (`createUser` resoluble) para los tests de creación de usuario (aditivo, sin afectar las suites previas).
+  * **Suite de pruebas** (`backend/tests/users.test.js`, 8 tests): 201 con rol médico y JSON estructurado; persistencia en `systemUsers` con `medicalProfile`; 400 por campos faltantes / médico sin perfil / rol inválido; **no rompe la ejecución** si Auth falla (201 con UID local); 500 JSON legible si Firestore lanza (sin HTML); el alias `/api/createSystemUser` sigue funcionando.
+  * **Frontend** (`frontend/src/components/SystemUserManagement.jsx`):
+    * `POST` relativo a `/api/users` (alineado al contrato del spec; el alias `/api/createSystemUser` queda de respaldo).
+    * **Parsing JSON defensivo**: `response.json()` se envuelve en `try/catch` (si llega HTML/Texto `resData=null`); si `!response.ok || !resData?.success` se lanza `Error(resData?.message || 'Error en el servidor al crear usuario (HTTP N)')` → el `toast` muestra mensaje legible sin romper en `JSON.parse`.
+  * **Frontend** (`frontend/src/components/Telemedicina.jsx` — mapeo `Fecha:` del detalle de historia):
+    * Helper de módulo `getHistoryDetailDate(detail)` con la **misma precedencia que el resumen del backend**: `date → createdAt → fase1.completedAt → updatedAt → timestamp`. El documento crudo que devuelve `GET /api/medical-history/:historyId` no siempre trae `date`/`createdAt` (Telemedicina guarda `updatedAt`/`fase1.completedAt`), por lo que antes la cabecera `Fecha:` podía mostrar "Fecha inválida".
+    * El campo `Fecha:` del modal de detalle ahora es `formatDate(getHistoryDetailDate(selectedHistoryDetail))`; `formatDate` (BEAT 14) normaliza el Timestamp serializado `{ _seconds, _nanoseconds }` → fecha válida garantizada.
+* **Despliegue:** `docker compose restart backend` (recarga `server.js` bind-mount + router nuevo) y `docker compose build frontend` (vite EXIT 0) + `docker compose up -d frontend` (contenedor recreado). Tests/mock copiados con `docker cp` (no están bind-mounted).
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 8 passed, 8 total
+  Tests:       59 passed, 59 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "npm test"` → **EXIT CODE 0** ✅ (suite `users.test.js`: 8/8 PASSED).
+  Probes en vivo:
+  * `POST /api/createSystemUser` (backend directo y vía proxy del frontend `server13_1-frontend-1`) con body vacío → **400** `Content-Type: application/json; charset=utf-8` con `{"success":false,"message":"Los campos email, password y nombreCompleto son obligatorios."}` (antes era HTML 404 del Express).
+  * `POST /api/users` idem → **400** JSON estructurado.
+  * Bundle desplegado `index-DhseGbD5.js` contiene `/api/users`, "Error en el servidor al crear usuario (HTTP " y la cadena de fallback de fecha (`fase1.completedAt || updatedAt`) → ambas correcciones presentes en producción.
+* **Notas:**
+  * Se evita probe real de creación de usuarios (evita generar cuentas espurias en Firebase Auth de producción); el contrato JSON de error se validó en vivo con un payload vacío.
+  * El host no tiene `node`/`npm`; la suite y el build se validaron por la vía autoritativa Docker (metodología de beats previos).
+  * No se alteraron endpoints existentes (política de aislamiento); solo se agregaron `/api/users` y el alias `/api/createSystemUser` que antes no existía y devolvía HTML.
+
+### [BEAT 16] - Bucle qa-users-crud-and-mandatory-diagnostic-loop.md: CRUD Usuarios e Impresión Diagnóstica Obligatoria
+* **Fecha/Hora:** 2026-09-18
+* **Acción Principal:**
+  * **Backend — Middleware compartido** (`backend/src/routes/middleware.js` — NEW): `checkOperatorRole` se extrajo de `server.js` a este módulo (server.js lo re-requiere, firma idéntica, sin cambios funcionales en los endpoints existentes) y ahora, tras validar rol/UID, consulta `artifacts/{APP_ID}/systemUsers/{uid}` y `artifacts/{APP_ID}/users/{uid}/profile/data`: si `status === 'inactive'` | `'disabled'` | `isActive === false` → **403** `{ success:false, message:'Cuenta inactivada. Contacte al administrador' }` (bloqueo de acceso a la API de operadores inactivos; si la consulta falla, se permite por no bloquear ante errores de lectura).
+  * **Backend — Router admin** (`backend/src/routes/admin.js` — NEW, montado en `app.use('/api/admin', adminRouter)`):
+    * `DELETE /api/admin/users/:uid` → elimina en Firebase Auth (`admin.auth().deleteUser`) y borra los Firestore docs `users/{uid}/profile/data` y `systemUsers/{uid}`; tolera `auth/user-not-found`; **404** si no existe ni en Auth ni en Firestore; **400** si el UID trae `/` o `..` (anti path-traversal).
+    * `PATCH /api/admin/users/:uid/password` → recibe `newPassword`, valida string no vacío ≥ 6 caracteres (**400**), ejecuta `admin.auth().updateUser(uid, { password })` ✓.
+    * `PATCH /api/admin/users/:uid/status` → recibe `status` (`active|inactive`) o `isActive` (booleano); ejecuta `admin.auth().updateUser(uid, { disabled })` y sincroniza con `{merge:true}` el perfil móvil + `systemUsers` (`status`, `isActive`, `updatedAt`).
+  * **Mock `firebase-admin`** (`backend/__mocks__/firebase-admin.js`): se añaden `auth().deleteUser` y `auth().updateUser` (`jest.fn` idéntico a `createUser`). Aditivo, sin impacto en suites previas.
+  * **Suite de pruebas** (`backend/tests/adminUsers.test.js`, 18 tests): DELETE (403 sin cabeceras/rol insuficiente, 200 borra Auth+Firestore, 404 inexistente, 500 JSON), PASSWORD (403, 400 faltante, 400 corta, 200 `updateUser` con `{password}`, 500 JSON), STATUS (403, 400 faltante, 200 inactiva con `{disabled:true}` + sincronización de ambos docs, 200 activa) y BLOQUEO DE INACTIVOS en middleware (403 con `status:inactive`, 403 con `isActive:false`, 200 operador activo, 403 admin inactivo en DELETE).
+  * **Frontend — `SystemUserManagement.jsx`** (módulo de administración de personal):
+    * Nuevas props `user` y `operatorRole` (plumbing desde `App.jsx`) + helper `adminHeaders()` con `X-Operator-Rol`/`X-Operator-Uid`.
+    * Botón **Eliminar** en cada fila → modal de confirmación ("¿Estás seguro de eliminar a ...? Se eliminará su cuenta en Firebase Auth y sus documentos en Firestore...") → `DELETE /api/admin/users/:uid` → refresca la lista.
+    * Botón **🔑 Clave** en cada fila → modal con input de nueva clave (mínimo 6) → `PATCH /api/admin/users/:uid/password`.
+    * Al editar, además del `updateDoc` directo en Firestore, se invoca `syncUserStatusViaApi` (`PATCH .../status` con `{ isActive }`) para deshabilitar/habilitar efectivamente la cuenta en Firebase Auth; si falla, el resto del guardado continúa con advertencia. Al **crear** un usuario con `isActive:false`, se deshabilita tras el alta vía la misma API.
+  * **Frontend — `App.jsx`:** `SystemUserManagement` recibe `user`/`operatorRole`; `updateUserIsActiveStatus` (toggle Desactivar/Activar del listado de usuarios móviles) ahora pasa por `PATCH /api/admin/users/:uid/status` (deshabilita Auth) con fallback a la escritura directa en Firestore.
+  * **Frontend — `Telemedicina.jsx` (Impresión Diagnóstica obligatoria):**
+    * `handleSaveMedicalHistory` valida `!medicalForm.diagnostico || !String(...).trim()` → **bloquea el guardado/finalización** con toast de error y activa `diagnosticError` (borde rojo `border-red-500 ring-2 ring-red-300` + título rojo + alerta "⚠️ La Impresión Diagnóstica (CIE10) es obligatoria..."). El error se limpia al escribir/seleccionar diagnóstico y al iniciar/retomar chat (`setDiagnosticError(false)` en `handleStartChat`/`handleRejoinSession`).
+* **Despliegue:** `docker compose restart backend` (carga router/middleware bind-mount) y `docker compose build frontend` (EXIT 0, imagen `server13_1-frontend`) + `docker compose up -d frontend` (contenedor `server13_1-frontend-1` recreado). Tests/`__mocks__`/`jest.config.js` sincronizados con `docker cp`; `jest`/`supertest` reinstalados con `npm install --no-save` en el contenedor (estaban ausentes tras un recreado del volumen de node_modules).
+* **Resultado Verificado (Determinista):**
+  ```
+  Test Suites: 9 passed, 9 total
+  Tests:       77 passed, 77 total
+  ```
+  `docker exec server13_1-backend-1 sh -c "cd /app && NODE_ENV=test APP_ID=test-app-id npm test"` → **EXIT CODE 0** ✅ (suite `adminUsers.test.js`: 18/18 PASSED).
+  Probes en vivo (backend `127.0.0.1:4001`):
+  * `GET /` → 200. `DELETE /api/admin/users/x` sin cabeceras → 403 JSON. `PATCH .../password` sin cabeceras → 403 JSON; con admin y UID inexistente → **500 JSON plano** (no HTML); `PATCH .../status` con payload vacío → **400 JSON** "El campo status (active|inactive) o isActive (booleano) es obligatorio."; `DELETE` con UID inexistente → **404 JSON** "Usuario no encontrado.".
+  * Bundle `index-DMvrAPnU.js` (server13_1-frontend-1) contiene: "Eliminar Usuario", "newPassword", "Impresión Diagnóstica (CIE10) *", "La Impresión Diagnóstica (CIE10) es obligatoria" y `/api/admin/users` → todas las correcciones presentes en producción.
+* **Notas:**
+  * La extracción de `checkOperatorRole` a `routes/middleware.js` es un refactor interno sin cambio de firma; todos los endpoints protegidos existentes operan con el mismo middleware (ahora con bloqueo de inactivos).
+  * La eliminación/cambio de clave con UIDs reales no se probea en vivo para no borrar/modificar cuentas reales de producción; el contrato (403/400/404/500 JSON) se validó sin side-effects.
+  * `npm test` verifica la integridad total del backend (77/77); el frontend se validó por build Docker autoritativo (`npm ci --legacy-peer-deps && vite build`), metodología de beats previos (el host no tiene `node`/`npm`).

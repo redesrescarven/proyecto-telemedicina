@@ -37,22 +37,19 @@ app.use('/api/autocomplete', autocompleteRouter);
 const autocompleteSTRouter = require('./routes/autocomplete_st');
 app.use('/api/autocomplete', autocompleteSTRouter);
 
-// Middleware para verificar el rol del operador
-const checkOperatorRole = (requiredRoles) => async (req, res, next) => {
-    const operatorRoleHeader = req.headers['x-operator-rol'];
-    const operatorUidHeader = req.headers['x-operator-uid'];
-    if (!operatorRoleHeader || !operatorUidHeader) {
-        console.warn('Backend: Acceso denegado a endpoint: Faltan cabeceras de rol o UID.');
-        return res.status(403).json({ message: 'Acceso denegado: Credenciales de operador requeridas.' });
-    }
-    if (!requiredRoles.includes(operatorRoleHeader)) {
-        console.warn(`Backend: Acceso denegado para rol: ${operatorRoleHeader}. Roles requeridos: ${requiredRoles.join(', ')}`);
-        return res.status(403).json({ message: 'Acceso denegado: Rol insuficiente.' });
-    }
-    req.operatorUid = operatorUidHeader;
-    req.operatorRole = operatorRoleHeader;
-    next();
-};
+const externalApiRouter = require('./routes/externalApi');
+app.use('/api/external', externalApiRouter);
+
+const usersRouter = require('./routes/users');
+app.use('/api/users', usersRouter);
+app.use('/api/createSystemUser', usersRouter);
+
+const adminRouter = require('./routes/admin');
+app.use('/api/admin', adminRouter);
+
+// Middleware compartido para verificar el rol del operador.
+// Incluye el bloqueo de cuentas inactivas (status === 'inactive' | disabled | isActive === false).
+const { checkOperatorRole } = require('./routes/middleware');
 
 // Ruta de prueba
 app.get('/', (req, res) => {

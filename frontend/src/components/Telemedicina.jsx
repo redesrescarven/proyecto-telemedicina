@@ -12,7 +12,8 @@ import {
   onSnapshot,
   getDoc,
   getDocs,
-  serverTimestamp
+  serverTimestamp,
+  deleteField
 } from 'firebase/firestore';
 
 import config, { getVideoCallUrl } from '../config';
@@ -54,6 +55,17 @@ const FieldDetail = ({ label, value }) => {
     </p>
   );
 };
+
+// Variable exacta que alimenta el campo 'Fecha:' del detalle de historia.
+// El documento crudo puede guardar la fecha en distintos campos según el origen
+// (telemedicina, emergencia directa o escalada), por lo que se resuelve con la
+// misma precedencia que usa el backend en el resumen de historias.
+const getHistoryDetailDate = (detail) =>
+  detail?.date ||
+  detail?.createdAt ||
+  detail?.fase1?.completedAt ||
+  detail?.updatedAt ||
+  detail?.timestamp;
 
 const Telemedicina = ({ user, db, operatorName, appId = "default-app-id", rol, setToast }) => {
   const [showTermsModal, setShowTermsModal] = useState(false);
@@ -117,6 +129,9 @@ const Telemedicina = ({ user, db, operatorName, appId = "default-app-id", rol, s
 
   const [medicalForm, setMedicalForm] = useState(emptyMedicalForm);
 
+  // ✅ NUEVO (qa-users-crud-and-mandatory-diagnostic-loop): Impresión Diagnóstica obligatoria
+  const [diagnosticError, setDiagnosticError] = useState(false);
+
   const preloadPatientData = async (sessionId) => {
     try {
       if (!sessionId || !db) return;
@@ -140,11 +155,33 @@ const Telemedicina = ({ user, db, operatorName, appId = "default-app-id", rol, s
   };
 
   const formatDate = (timestamp) => {
-    if (!timestamp) return "Fecha inválida";
+    if (timestamp === null || timestamp === undefined || timestamp === '') return "Fecha inválida";
     try {
-      if (timestamp.toDate) return timestamp.toDate().toLocaleString();
-      if (typeof timestamp === 'number') return new Date(timestamp).toLocaleString();
-      if (typeof timestamp === 'string') return new Date(timestamp).toLocaleString();
+      if (typeof timestamp.toDate === 'function') {
+        return timestamp.toDate().toLocaleString();
+      }
+      if (timestamp instanceof Date) {
+        if (isNaN(timestamp.getTime())) return "Fecha inválida";
+        return timestamp.toLocaleString();
+      }
+      if (typeof timestamp === 'number') {
+        if (isNaN(timestamp)) return "Fecha inválida";
+        return new Date(timestamp).toLocaleString();
+      }
+      if (typeof timestamp === 'string') {
+        const parsed = new Date(timestamp);
+        if (isNaN(parsed.getTime())) return "Fecha inválida";
+        return parsed.toLocaleString();
+      }
+      if (typeof timestamp === 'object') {
+        const seconds = timestamp._seconds ?? timestamp.seconds;
+        const nanoseconds = timestamp._nanoseconds ?? timestamp.nanoseconds;
+        if (typeof seconds === 'number') {
+          const msSeconds = seconds * 1000;
+          const msNanos = typeof nanoseconds === 'number' ? nanoseconds / 1e6 : 0;
+          return new Date(msSeconds + msNanos).toLocaleString();
+        }
+      }
       return "Fecha inválida";
     } catch (e) {
       return "Fecha inválida";
@@ -249,6 +286,7 @@ const Telemedicina = ({ user, db, operatorName, appId = "default-app-id", rol, s
       setSelectedEmergency(req);
       // 🔒 CORRECCIÓN: No arrastrar el diagnóstico/historia de la consulta anterior.
       setMedicalForm({ ...emptyMedicalForm });
+      setDiagnosticError(false);
       await preloadPatientData(req.id);
       setShowChatModal(true);
       setIsHistorySaved(false);
@@ -294,6 +332,7 @@ const Telemedicina = ({ user, db, operatorName, appId = "default-app-id", rol, s
 
       setSelectedEmergency(req);
       setMedicalForm({ ...emptyMedicalForm });
+      setDiagnosticError(false);
       await preloadPatientData(req.id);
       setShowChatModal(true);
       setIsHistorySaved(false);
@@ -438,9 +477,13 @@ const confirmAndSendVideoInvite = async () => {
     
     try {
       // Actualizar estado a 'ended' para que la app móvil detecte el cierre
+      // y LIMPIAR la negociación WebRTC (sdpOffer/sdpAnswer) de la llamada
+      // anterior para permitir re-abrir la videollamada en la misma sesión.
       await updateDoc(doc(db, `artifacts/${appId}/public/data/telemedicineSessions`, selectedEmergency.id), {
         videoCallStatus: 'ended',
         videoCallEndedAt: serverTimestamp(),
+        sdpOffer: deleteField(),
+        sdpAnswer: deleteField(),
         updatedAt: serverTimestamp()
       });
 
@@ -635,6 +678,15 @@ const handleSaveMedicalHistory = async () => {
     const userId = selectedEmergency.userId;
     const safeOperatorName = operatorName || 'Operador';
 
+    // ✅ OBLIGATORIO (qa-users-crud-and-mandatory-diagnostic-loop):
+    // La Impresión Diagnóstica (CIE10) debe estar llena para guardar/finalizar la historia.
+    if (!medicalForm.diagnostico || !String(medicalForm.diagnostico).trim()) {
+      setDiagnosticError(true);
+      setToast({ message: "⚠️ Debes completar la Impresión Diagnóstica (CIE10) antes de guardar la Historia Médica.", type: 'error' });
+      return;
+    }
+    setDiagnosticError(false);
+
     // ✅ NUEVO: Consultar los recipes generados en esta sesión
     const prescriptionsRef = collection(db, `artifacts/${appId}/public/data/prescriptions`);
     const q = query(
@@ -696,15 +748,33 @@ const handleInviteVideo = async () => {
   try {
     const sessionId = selectedEmergency.id;
     const sessionRef = doc(db, `artifacts/${appId}/public/data/telemedicineSessions`, sessionId);
+    const safeOperatorName = operatorName || 'Operador';
     
-    // 1. Actualizar estado en Firebase para que el paciente reaccione
+    // 1. Reiniciar la sala: limpiar SDP de una llamada previa y publicar estado
+    //    'waiting' para que el listener del paciente NO quede bloqueado en
+    //    'ended' y pueda re-abrir la videollamada N veces en esta sesión.
     await updateDoc(sessionRef, {
-      videoCallStatus: 'waiting', 
+      videoCallStatus: 'waiting',
+      sdpOffer: deleteField(),
+      sdpAnswer: deleteField(),
       updatedAt: serverTimestamp()
     });
 
-    // 2. CONFIGURACIÓN DEL POP-UP (Web del Médico)
-    const videoUrl = `/video-call?id=${sessionId}&role=doctor`;
+    // 2. Emitir una nueva invitación en el chat con la URL de la llamada
+    //    para que la App del paciente reciba un evento fresco (reintento/reabrir).
+    const messagesRef = collection(db, `artifacts/${appId}/public/data/telemedicineSessions/${sessionId}/messages`);
+    const videoUrl = getVideoCallUrl(sessionId, 'patient');
+    await addDoc(messagesRef, {
+      text: "📹 El médico solicita iniciar una videollamada. Por favor, acepte la invitación en su pantalla.",
+      sender: 'operator',
+      senderName: safeOperatorName,
+      timestamp: serverTimestamp(),
+      type: 'video_invitation',
+      videoUrl
+    });
+
+    // 3. CONFIGURACIÓN DEL POP-UP (Web del Médico)
+    const doctorVideoUrl = `/video-call?id=${sessionId}&role=doctor`;
     const ancho = 1000; // Un poco más ancho para ver bien
     const alto = 750;
     
@@ -715,7 +785,7 @@ const handleInviteVideo = async () => {
     console.log("DEBUG 3: Abriendo Pop-up de Telemedicina");
 
     const win = window.open(
-      videoUrl, 
+      doctorVideoUrl, 
       `Telemedicina_${sessionId}`, // Nombre único para la ventana
       `width=${ancho},height=${alto},left=${x},top=${y},resizable=yes,status=no,location=no,toolbar=no,menubar=no`
     );
@@ -1021,14 +1091,24 @@ const handleInviteVideo = async () => {
                   <textarea placeholder="Síntomas reportados..." value={medicalForm.sintomas} onChange={(e) => setMedicalForm({ ...medicalForm, sintomas: e.target.value })} className="w-full border rounded px-3 py-2.5 disabled:bg-gray-100" disabled={isHistorySaved} />
                 </section>
 
-		<section className="bg-white p-5 rounded-lg shadow-md border">
-		  <h5 className="font-semibold text-xl text-gray-700 mb-3">Impresión Diagnóstica (CIE10)</h5>
+		<section className={`bg-white p-5 rounded-lg shadow-md border transition ${diagnosticError ? 'border-red-500 ring-2 ring-red-300' : 'border-gray-300'}`}>
+		  <h5 className={`font-semibold text-xl mb-3 ${diagnosticError ? 'text-red-600' : 'text-gray-700'}`}>
+		    Impresión Diagnóstica (CIE10) *
+		  </h5>
 		  <DiagnosticAutocomplete
 		    value={medicalForm.diagnostico}
-		    onChange={(val) => setMedicalForm({ ...medicalForm, diagnostico: val })}
+		    onChange={(val) => {
+                      setMedicalForm({ ...medicalForm, diagnostico: val });
+                      if (String(val || '').trim()) setDiagnosticError(false);
+                    }}
 		    disabled={isHistorySaved}
 		    placeholder="Buscar diagnóstico..."
 		  />
+		  {diagnosticError && (
+		    <p className="text-red-600 text-sm font-medium mt-2">
+		      ⚠️ La Impresión Diagnóstica (CIE10) es obligatoria para guardar/finalizar la historia médica.
+		    </p>
+		  )}
 		</section>
 
 	       <section className= "bg-white p-5 rounded-lg shadow-md border " >
@@ -1147,7 +1227,7 @@ const handleInviteVideo = async () => {
 	                  <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
 	                    <h4 className="text-lg font-bold text-slate-800 mb-3">📋 Detalle de la Historia Médica</h4>
 	                    <div className="grid grid-cols-2 gap-3 text-sm">
-	                      <p><span className="font-semibold text-slate-600">Fecha:</span> {formatDate(selectedHistoryDetail.date || selectedHistoryDetail.createdAt)}</p>
+	                      <p><span className="font-semibold text-slate-600">Fecha:</span> {formatDate(getHistoryDetailDate(selectedHistoryDetail))}</p>
 	                      <p><span className="font-semibold text-slate-600">Tipo de encuentro:</span> {selectedHistoryDetail.encounterType || 'No especificado'}</p>
 	                      <p><span className="font-semibold text-slate-600">Estado:</span> {selectedHistoryDetail.status || 'No especificado'}</p>
 	                      <p><span className="font-semibold text-slate-600">Actualizado:</span> {formatDate(selectedHistoryDetail.updatedAt)}</p>

@@ -28,6 +28,321 @@ const statusLabel = (status) => {
   return map[status] || status || 'N/A';
 };
 
+// ── Elementos visuales definidos FUERA del componente principal ─────────────
+// IMPORTANTE (frontend-ux-videocall-fix-loop): definir estos sub-componentes a
+// nivel de módulo evita que React los re-cree en cada render, lo que causaba el
+// desmontaje del árbol y la pérdida de foco en el input de cédula al escribir.
+const Spinner = ({ label }) => (
+  <div className="flex flex-col items-center justify-center py-12 gap-3 text-gray-500">
+    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div>
+    <p className="text-sm">{label}</p>
+  </div>
+);
+
+const EmptyState = ({ titulo, mensaje, icon }) => (
+  <div className="text-center py-12 text-gray-400 border border-dashed border-gray-300 rounded-lg bg-gray-50">
+    <p className="text-3xl mb-2">{icon || '🔍'}</p>
+    <p className="font-semibold text-gray-500">{titulo}</p>
+    <p className="text-sm mt-1">{mensaje}</p>
+  </div>
+);
+
+const renderField = (label, value) => (
+  <p className="text-sm text-gray-700">
+    <strong>{label}:</strong> <span className="text-gray-800">{value || <span className="italic text-gray-400">No registrado</span>}</span>
+  </p>
+);
+
+const formatDate = (iso) => {
+  if (!iso) return 'N/A';
+  try {
+    const date = new Date(iso);
+    if (isNaN(date.getTime())) return 'N/A';
+    return date.toLocaleString('es-VE');
+  } catch {
+    return 'N/A';
+  }
+};
+
+const FiltroCompartido = ({ filtros, setFiltros, isLoading, handleSearch, limpiar, activeView, exportCSV, imprimirReporte }) => (
+  <div className="bg-gray-50 p-4 rounded-lg mb-6 border">
+    <h3 className="font-semibold text-gray-700 mb-3">Filtros de Búsqueda</h3>
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Fecha Inicio</label>
+        <input type="date" value={filtros.startDate} onChange={(e) => setFiltros({ ...filtros, startDate: e.target.value })} className="w-full p-2 border rounded" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Fecha Fin</label>
+        <input type="date" value={filtros.endDate} onChange={(e) => setFiltros({ ...filtros, endDate: e.target.value })} className="w-full p-2 border rounded" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Cédula / Paciente</label>
+        <input type="text" value={filtros.patientId} onChange={(e) => setFiltros({ ...filtros, patientId: e.target.value })} placeholder="Cédula, ID o nombre" className="w-full p-2 border rounded" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Médico</label>
+        <input type="text" value={filtros.doctorId} onChange={(e) => setFiltros({ ...filtros, doctorId: e.target.value })} placeholder="Nombre o ID del médico" className="w-full p-2 border rounded" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Servicio</label>
+        <select value={filtros.serviceType} onChange={(e) => setFiltros({ ...filtros, serviceType: e.target.value })} className="w-full p-2 border rounded">
+          <option value="todos">Todos</option>
+          <option value="telemedicina">Telemedicina</option>
+          <option value="emergencia">Emergencia</option>
+        </select>
+      </div>
+    </div>
+    <div className="mt-4 flex flex-wrap gap-2">
+      <button onClick={handleSearch} disabled={isLoading} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded transition disabled:opacity-50">
+        {isLoading ? 'Generando...' : '📊 Generar Reporte'}
+      </button>
+      <button onClick={limpiar} className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded transition">
+        Limpiar
+      </button>
+      <div className="flex-1"></div>
+      {activeView === 'auditoria' && (
+        <>
+          <button onClick={exportCSV} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded transition">
+            ⬇️ Exportar CSV/Excel
+          </button>
+          <button onClick={imprimirReporte} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded transition">
+            🖨️ Imprimir Reporte (PDF)
+          </button>
+        </>
+      )}
+    </div>
+  </div>
+);
+
+// ── VISTA 1: Auditoría y Detalle ───────────────────────────────────────────
+const AuditoriaView = ({ loadingDetailed, hasSearchedDetailed, historias, openHistoryDetail, handleRowPdf }) => (
+  <div>
+    {loadingDetailed ? (
+      <Spinner label="Consultando historias médicas en el servidor..." />
+    ) : !hasSearchedDetailed ? (
+      <EmptyState
+        icon="📋"
+        titulo="Auditoría y Detalle de Historias Médicas"
+        mensaje="Aplica los filtros y pulsa «Generar Reporte» para listar todas las atenciones de la plataforma."
+      />
+    ) : historias.length === 0 ? (
+      <EmptyState
+        icon="🗂️"
+        titulo="No se encontraron coincidencias"
+        mensaje="No hay historias médicas que coincidan con los filtros aplicados. Amplía el rango de fechas o limpia los filtros."
+      />
+    ) : (
+      <div className="mb-6">
+        <h3 className="font-semibold text-gray-700 mb-3">
+          Resultados <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-sm font-bold">{historias.length} atenciones</span>
+        </h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full bg-white border">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="py-2 px-4 border text-left">Fecha</th>
+                <th className="py-2 px-4 border text-left">Paciente</th>
+                <th className="py-2 px-4 border text-left">Cédula</th>
+                <th className="py-2 px-4 border text-left">Servicio</th>
+                <th className="py-2 px-4 border text-left">Médico</th>
+                <th className="py-2 px-4 border text-left">Diagnóstico</th>
+                <th className="py-2 px-4 border text-left">Estado</th>
+                <th className="py-2 px-4 border text-center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historias.map(h => (
+                <tr key={h.id} className="hover:bg-indigo-50 transition" onDoubleClick={() => openHistoryDetail(h)}>
+                  <td className="py-2 px-4 border">{formatDate(h.fecha)}</td>
+                  <td className="py-2 px-4 border font-medium text-gray-800 cursor-pointer" title="Doble clic para abrir detalle" onClick={() => openHistoryDetail(h)}>{h.pacienteNombre || 'N/A'}</td>
+                  <td className="py-2 px-4 border">{h.cedula || 'N/A'}</td>
+                  <td className="py-2 px-4 border">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${String(h.encounterType).includes('telemedicine') ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
+                      {serviceLabel(h.encounterType)}
+                    </span>
+                  </td>
+                  <td className="py-2 px-4 border">{h.medico || 'N/A'}</td>
+                  <td className="py-2 px-4 border">{h.diagnosticoFinal || <span className="italic text-gray-400">No registrado</span>}</td>
+                  <td className="py-2 px-4 border">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${String(h.status).startsWith('completed') ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                      {statusLabel(h.status)}
+                    </span>
+                  </td>
+                  <td className="py-2 px-4 border text-center whitespace-nowrap">
+                    <button onClick={() => openHistoryDetail(h)} className="bg-blue-600 hover:bg-blue-700 text-white text-sm py-1 px-3 rounded mr-1" title="Ver detalle completo">
+                      Ver
+                    </button>
+                    <button onClick={() => handleRowPdf(h)} className="bg-green-600 hover:bg-green-700 text-white text-sm py-1 px-3 rounded" title="Descargar PDF individual">
+                      PDF
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-gray-400 mt-2">💡 Tip: haz doble clic sobre una fila para abrir el detalle completo de la historia médica.</p>
+      </div>
+    )}
+  </div>
+);
+
+// ── VISTA 2: Dashboard Estadístico / BI ─────────────────────────────────────
+const DashboardView = ({ loadingAnalytics, hasSearchedAnalytics, analytics }) => {
+  if (loadingAnalytics) {
+    return <Spinner label="Calculando indicadores de inteligencia médica..." />;
+  }
+  if (!hasSearchedAnalytics || !analytics) {
+    return (
+      <EmptyState
+        icon="📈"
+        titulo="Dashboard Estadístico / BI"
+        mensaje="Aplica los filtros y pulsa «Generar Reporte» para visualizar KPIs, diagnósticos recurrentes y el volumen operativo."
+      />
+    );
+  }
+
+  const kpis = analytics.kpis || {};
+  const topDiagnoses = analytics.topDiagnoses || [];
+  const genderDistribution = analytics.genderDistribution || [];
+  const ageDistribution = analytics.ageDistribution || [];
+  const volumeByDate = analytics.volumeByDate || [];
+
+  const maxDiagnosis = Math.max(1, ...topDiagnoses.map(d => d.count));
+  const maxAge = Math.max(1, ...ageDistribution.map(a => a.count));
+  const maxVolume = Math.max(1, ...volumeByDate.map(v => v.count));
+  const genderTotal = genderDistribution.reduce((acc, g) => acc + g.count, 0) || 1;
+
+  const kpiCards = [
+    { titulo: 'Total de Atenciones', valor: kpis.totalAtenciones ?? 0, icon: '🩺', color: 'from-indigo-500 to-indigo-700' },
+    { titulo: 'Pacientes Únicos', valor: kpis.pacientesUnicos ?? 0, icon: '👥', color: 'from-blue-500 to-blue-700' },
+    { titulo: 'Con Diagnóstico', valor: kpis.conDiagnostico ?? 0, icon: '📋', color: 'from-green-500 to-green-700' },
+    { titulo: 'Historias Completadas', valor: kpis.completadas ?? 0, icon: '✅', color: 'from-purple-500 to-purple-700' },
+  ];
+
+  const genderBars = [
+    { key: 'femenino', color: 'bg-pink-500' },
+    { key: 'masculino', color: 'bg-blue-500' },
+    { key: 'otro', color: 'bg-amber-500' },
+    { key: 'No especificado', color: 'bg-gray-300' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Tarjetas de KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {kpiCards.map(card => (
+          <div key={card.titulo} className={`bg-gradient-to-br ${card.color} text-white rounded-xl p-5 shadow-lg`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium opacity-90">{card.titulo}</p>
+                <p className="text-4xl font-extrabold mt-1">{card.valor.toLocaleString('es-VE')}</p>
+              </div>
+              <span className="text-4xl opacity-90">{card.icon}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Diagnósticos recurrentes */}
+        <div className="bg-white border rounded-lg p-5 shadow-sm">
+          <h4 className="font-bold text-gray-700 mb-4">🧬 Diagnósticos Recurrentes (Top 5)</h4>
+          {topDiagnoses.length === 0 ? (
+            <p className="text-sm text-gray-400 italic">Sin diagnósticos registrados en el rango seleccionado.</p>
+          ) : (
+            <div className="space-y-3">
+              {topDiagnoses.map(d => (
+                <div key={d.diagnosis}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-800 font-medium">{d.diagnosis}</span>
+                    <span className="text-gray-500 font-bold">{d.count}</span>
+                  </div>
+                  <div className="bg-gray-100 rounded-full h-3 overflow-hidden">
+                    <div className="h-3 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500" style={{ width: `${(d.count / maxDiagnosis) * 100}%` }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Distribución por género */}
+        <div className="bg-white border rounded-lg p-5 shadow-sm">
+          <h4 className="font-bold text-gray-700 mb-4">👫 Distribución por Género</h4>
+          {genderTotal <= 1 ? (
+            <p className="text-sm text-gray-400 italic">Sin datos de género en el rango seleccionado.</p>
+          ) : (
+            <>
+              <div className="flex h-5 w-full rounded-full overflow-hidden mb-4">
+                {genderBars.map(bar => {
+                  const g = genderDistribution.find(x => x.gender === bar.key);
+                  const count = g ? g.count : 0;
+                  if (!count) return null;
+                  return <div key={bar.key} className={bar.color} style={{ width: `${(count / genderTotal) * 100}%` }} title={`${GENDER_LABELS[bar.key]}: ${count}`}></div>;
+                })}
+              </div>
+              <div className="space-y-2">
+                {genderDistribution.filter(g => g.count > 0).map(g => (
+                  <div key={g.gender} className="flex justify-between text-sm">
+                    <span className="text-gray-700">{GENDER_LABELS[g.gender] || g.gender}</span>
+                    <span className="text-gray-500 font-medium">{g.count} · {Math.round((g.count / genderTotal) * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Volumen operativo por día */}
+        <div className="bg-white border rounded-lg p-5 shadow-sm">
+          <h4 className="font-bold text-gray-700 mb-4">📅 Volumen Operativo (últimos 30 días)</h4>
+          {volumeByDate.length === 0 ? (
+            <p className="text-sm text-gray-400 italic">Sin actividad en el rango seleccionado.</p>
+          ) : (
+            <>
+              <div className="flex items-end gap-1 h-32 border-b border-gray-200 mb-2">
+                {volumeByDate.slice(-30).map(v => (
+                  <div key={v.date} className="flex-1 flex flex-col items-center justify-end group relative" title={`${v.date}: ${v.count} atención(es)`}>
+                    <div className={`w-full rounded-t ${v.count > 0 ? 'bg-indigo-500 group-hover:bg-indigo-700' : 'bg-gray-100'}`} style={{ height: `${Math.max(v.count > 0 ? 6 : 2, (v.count / maxVolume) * 100)}%` }}></div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>{volumeByDate.slice(-30)[0]?.date || ''}</span>
+                <span>hoy</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Grupos etarios */}
+        <div className="bg-white border rounded-lg p-5 shadow-sm">
+          <h4 className="font-bold text-gray-700 mb-4">🎂 Distribución por Grupos Etarios</h4>
+          {ageDistribution.every(a => a.count === 0) ? (
+            <p className="text-sm text-gray-400 italic">Sin datos de edad en el rango seleccionado.</p>
+          ) : (
+            <div className="space-y-3">
+              {ageDistribution.map(age => (
+                <div key={age.ageGroup}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-gray-800 font-medium">{age.ageGroup} años</span>
+                    <span className="text-gray-500 font-bold">{age.count}</span>
+                  </div>
+                  <div className="bg-gray-100 rounded-full h-3 overflow-hidden">
+                    <div className="h-3 rounded-full bg-gradient-to-r from-teal-400 to-emerald-600" style={{ width: `${(age.count / maxAge) * 100}%` }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ReportesHistoriasMedicas = ({ user, operatorRole, setToast }) => {
   const [activeView, setActiveView] = useState('auditoria'); // 'auditoria' | 'dashboard'
   const [filtros, setFiltros] = useState({
@@ -111,17 +426,6 @@ const ReportesHistoriasMedicas = ({ user, operatorRole, setToast }) => {
     setAnalytics(null);
     setHasSearchedDetailed(false);
     setHasSearchedAnalytics(false);
-  };
-
-  const formatDate = (iso) => {
-    if (!iso) return 'N/A';
-    try {
-      const date = new Date(iso);
-      if (isNaN(date.getTime())) return 'N/A';
-      return date.toLocaleString('es-VE');
-    } catch {
-      return 'N/A';
-    }
   };
 
   // ── Exportación CSV (Excel-compatible, separador ';', BOM UTF-8) ───────────
@@ -260,309 +564,7 @@ const ReportesHistoriasMedicas = ({ user, operatorRole, setToast }) => {
     setTimeout(() => exportPDFIndividual(), 300);
   };
 
-  const renderField = (label, value) => (
-    <p className="text-sm text-gray-700">
-      <strong>{label}:</strong> <span className="text-gray-800">{value || <span className="italic text-gray-400">No registrado</span>}</span>
-    </p>
-  );
-
   const isLoading = loadingDetailed || loadingAnalytics;
-
-  // ── Spinner de carga ───────────────────────────────────────────────────────
-  const Spinner = ({ label }) => (
-    <div className="flex flex-col items-center justify-center py-12 gap-3 text-gray-500">
-      <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div>
-      <p className="text-sm">{label}</p>
-    </div>
-  );
-
-  // ── Estado vacío ───────────────────────────────────────────────────────────
-  const EmptyState = ({ titulo, mensaje, icon }) => (
-    <div className="text-center py-12 text-gray-400 border border-dashed border-gray-300 rounded-lg bg-gray-50">
-      <p className="text-3xl mb-2">{icon || '🔍'}</p>
-      <p className="font-semibold text-gray-500">{titulo}</p>
-      <p className="text-sm mt-1">{mensaje}</p>
-    </div>
-  );
-
-  const FiltroCompartido = () => (
-    <div className="bg-gray-50 p-4 rounded-lg mb-6 border">
-      <h3 className="font-semibold text-gray-700 mb-3">Filtros de Búsqueda</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Fecha Inicio</label>
-          <input type="date" value={filtros.startDate} onChange={(e) => setFiltros({ ...filtros, startDate: e.target.value })} className="w-full p-2 border rounded" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Fecha Fin</label>
-          <input type="date" value={filtros.endDate} onChange={(e) => setFiltros({ ...filtros, endDate: e.target.value })} className="w-full p-2 border rounded" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Cédula / Paciente</label>
-          <input type="text" value={filtros.patientId} onChange={(e) => setFiltros({ ...filtros, patientId: e.target.value })} placeholder="Cédula, ID o nombre" className="w-full p-2 border rounded" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Médico</label>
-          <input type="text" value={filtros.doctorId} onChange={(e) => setFiltros({ ...filtros, doctorId: e.target.value })} placeholder="Nombre o ID del médico" className="w-full p-2 border rounded" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Servicio</label>
-          <select value={filtros.serviceType} onChange={(e) => setFiltros({ ...filtros, serviceType: e.target.value })} className="w-full p-2 border rounded">
-            <option value="todos">Todos</option>
-            <option value="telemedicina">Telemedicina</option>
-            <option value="emergencia">Emergencia</option>
-          </select>
-        </div>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <button onClick={handleSearch} disabled={isLoading} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded transition disabled:opacity-50">
-          {isLoading ? 'Generando...' : '📊 Generar Reporte'}
-        </button>
-        <button onClick={limpiar} className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded transition">
-          Limpiar
-        </button>
-        <div className="flex-1"></div>
-        {activeView === 'auditoria' && (
-          <>
-            <button onClick={exportCSV} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded transition">
-              ⬇️ Exportar CSV/Excel
-            </button>
-            <button onClick={imprimirReporte} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded transition">
-              🖨️ Imprimir Reporte (PDF)
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-
-  // ── VISTA 1: Auditoría y Detalle ───────────────────────────────────────────
-  const AuditoriaView = () => (
-    <div>
-      {loadingDetailed ? (
-        <Spinner label="Consultando historias médicas en el servidor..." />
-      ) : !hasSearchedDetailed ? (
-        <EmptyState
-          icon="📋"
-          titulo="Auditoría y Detalle de Historias Médicas"
-          mensaje="Aplica los filtros y pulsa «Generar Reporte» para listar todas las atenciones de la plataforma."
-        />
-      ) : historias.length === 0 ? (
-        <EmptyState
-          icon="🗂️"
-          titulo="No se encontraron coincidencias"
-          mensaje="No hay historias médicas que coincidan con los filtros aplicados. Amplía el rango de fechas o limpia los filtros."
-        />
-      ) : (
-        <div className="mb-6">
-          <h3 className="font-semibold text-gray-700 mb-3">
-            Resultados <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-sm font-bold">{historias.length} atenciones</span>
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="min-w-full bg-white border">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="py-2 px-4 border text-left">Fecha</th>
-                  <th className="py-2 px-4 border text-left">Paciente</th>
-                  <th className="py-2 px-4 border text-left">Cédula</th>
-                  <th className="py-2 px-4 border text-left">Servicio</th>
-                  <th className="py-2 px-4 border text-left">Médico</th>
-                  <th className="py-2 px-4 border text-left">Diagnóstico</th>
-                  <th className="py-2 px-4 border text-left">Estado</th>
-                  <th className="py-2 px-4 border text-center">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {historias.map(h => (
-                  <tr key={h.id} className="hover:bg-indigo-50 transition" onDoubleClick={() => openHistoryDetail(h)}>
-                    <td className="py-2 px-4 border">{formatDate(h.fecha)}</td>
-                    <td className="py-2 px-4 border font-medium text-gray-800 cursor-pointer" title="Doble clic para abrir detalle" onClick={() => openHistoryDetail(h)}>{h.pacienteNombre || 'N/A'}</td>
-                    <td className="py-2 px-4 border">{h.cedula || 'N/A'}</td>
-                    <td className="py-2 px-4 border">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${String(h.encounterType).includes('telemedicine') ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
-                        {serviceLabel(h.encounterType)}
-                      </span>
-                    </td>
-                    <td className="py-2 px-4 border">{h.medico || 'N/A'}</td>
-                    <td className="py-2 px-4 border">{h.diagnosticoFinal || <span className="italic text-gray-400">No registrado</span>}</td>
-                    <td className="py-2 px-4 border">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${String(h.status).startsWith('completed') ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-                        {statusLabel(h.status)}
-                      </span>
-                    </td>
-                    <td className="py-2 px-4 border text-center whitespace-nowrap">
-                      <button onClick={() => openHistoryDetail(h)} className="bg-blue-600 hover:bg-blue-700 text-white text-sm py-1 px-3 rounded mr-1" title="Ver detalle completo">
-                        Ver
-                      </button>
-                      <button onClick={() => handleRowPdf(h)} className="bg-green-600 hover:bg-green-700 text-white text-sm py-1 px-3 rounded" title="Descargar PDF individual">
-                        PDF
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-xs text-gray-400 mt-2">💡 Tip: haz doble clic sobre una fila para abrir el detalle completo de la historia médica.</p>
-        </div>
-      )}
-    </div>
-  );
-
-  // ── VISTA 2: Dashboard Estadístico / BI ─────────────────────────────────────
-  const DashboardView = () => {
-    if (loadingAnalytics) {
-      return <Spinner label="Calculando indicadores de inteligencia médica..." />;
-    }
-    if (!hasSearchedAnalytics || !analytics) {
-      return (
-        <EmptyState
-          icon="📈"
-          titulo="Dashboard Estadístico / BI"
-          mensaje="Aplica los filtros y pulsa «Generar Reporte» para visualizar KPIs, diagnósticos recurrentes y el volumen operativo."
-        />
-      );
-    }
-
-    const kpis = analytics.kpis || {};
-    const topDiagnoses = analytics.topDiagnoses || [];
-    const genderDistribution = analytics.genderDistribution || [];
-    const ageDistribution = analytics.ageDistribution || [];
-    const volumeByDate = analytics.volumeByDate || [];
-
-    const maxDiagnosis = Math.max(1, ...topDiagnoses.map(d => d.count));
-    const maxAge = Math.max(1, ...ageDistribution.map(a => a.count));
-    const maxVolume = Math.max(1, ...volumeByDate.map(v => v.count));
-    const genderTotal = genderDistribution.reduce((acc, g) => acc + g.count, 0) || 1;
-
-    const kpiCards = [
-      { titulo: 'Total de Atenciones', valor: kpis.totalAtenciones ?? 0, icon: '🩺', color: 'from-indigo-500 to-indigo-700' },
-      { titulo: 'Pacientes Únicos', valor: kpis.pacientesUnicos ?? 0, icon: '👥', color: 'from-blue-500 to-blue-700' },
-      { titulo: 'Con Diagnóstico', valor: kpis.conDiagnostico ?? 0, icon: '📋', color: 'from-green-500 to-green-700' },
-      { titulo: 'Historias Completadas', valor: kpis.completadas ?? 0, icon: '✅', color: 'from-purple-500 to-purple-700' },
-    ];
-
-    const genderBars = [
-      { key: 'femenino', color: 'bg-pink-500' },
-      { key: 'masculino', color: 'bg-blue-500' },
-      { key: 'otro', color: 'bg-amber-500' },
-      { key: 'No especificado', color: 'bg-gray-300' },
-    ];
-
-    return (
-      <div className="space-y-6">
-        {/* Tarjetas de KPIs */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {kpiCards.map(card => (
-            <div key={card.titulo} className={`bg-gradient-to-br ${card.color} text-white rounded-xl p-5 shadow-lg`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium opacity-90">{card.titulo}</p>
-                  <p className="text-4xl font-extrabold mt-1">{card.valor.toLocaleString('es-VE')}</p>
-                </div>
-                <span className="text-4xl opacity-90">{card.icon}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Diagnósticos recurrentes */}
-          <div className="bg-white border rounded-lg p-5 shadow-sm">
-            <h4 className="font-bold text-gray-700 mb-4">🧬 Diagnósticos Recurrentes (Top 5)</h4>
-            {topDiagnoses.length === 0 ? (
-              <p className="text-sm text-gray-400 italic">Sin diagnósticos registrados en el rango seleccionado.</p>
-            ) : (
-              <div className="space-y-3">
-                {topDiagnoses.map(d => (
-                  <div key={d.diagnosis}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-gray-800 font-medium">{d.diagnosis}</span>
-                      <span className="text-gray-500 font-bold">{d.count}</span>
-                    </div>
-                    <div className="bg-gray-100 rounded-full h-3 overflow-hidden">
-                      <div className="h-3 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500" style={{ width: `${(d.count / maxDiagnosis) * 100}%` }}></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Distribución por género */}
-          <div className="bg-white border rounded-lg p-5 shadow-sm">
-            <h4 className="font-bold text-gray-700 mb-4">👫 Distribución por Género</h4>
-            {genderTotal <= 1 ? (
-              <p className="text-sm text-gray-400 italic">Sin datos de género en el rango seleccionado.</p>
-            ) : (
-              <>
-                <div className="flex h-5 w-full rounded-full overflow-hidden mb-4">
-                  {genderBars.map(bar => {
-                    const g = genderDistribution.find(x => x.gender === bar.key);
-                    const count = g ? g.count : 0;
-                    if (!count) return null;
-                    return <div key={bar.key} className={bar.color} style={{ width: `${(count / genderTotal) * 100}%` }} title={`${GENDER_LABELS[bar.key]}: ${count}`}></div>;
-                  })}
-                </div>
-                <div className="space-y-2">
-                  {genderDistribution.filter(g => g.count > 0).map(g => (
-                    <div key={g.gender} className="flex justify-between text-sm">
-                      <span className="text-gray-700">{GENDER_LABELS[g.gender] || g.gender}</span>
-                      <span className="text-gray-500 font-medium">{g.count} · {Math.round((g.count / genderTotal) * 100)}%</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Volumen operativo por día */}
-          <div className="bg-white border rounded-lg p-5 shadow-sm">
-            <h4 className="font-bold text-gray-700 mb-4">📅 Volumen Operativo (últimos 30 días)</h4>
-            {volumeByDate.length === 0 ? (
-              <p className="text-sm text-gray-400 italic">Sin actividad en el rango seleccionado.</p>
-            ) : (
-              <>
-                <div className="flex items-end gap-1 h-32 border-b border-gray-200 mb-2">
-                  {volumeByDate.slice(-30).map(v => (
-                    <div key={v.date} className="flex-1 flex flex-col items-center justify-end group relative" title={`${v.date}: ${v.count} atención(es)`}>
-                      <div className={`w-full rounded-t ${v.count > 0 ? 'bg-indigo-500 group-hover:bg-indigo-700' : 'bg-gray-100'}`} style={{ height: `${Math.max(v.count > 0 ? 6 : 2, (v.count / maxVolume) * 100)}%` }}></div>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>{volumeByDate.slice(-30)[0]?.date || ''}</span>
-                  <span>hoy</span>
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Grupos etarios */}
-          <div className="bg-white border rounded-lg p-5 shadow-sm">
-            <h4 className="font-bold text-gray-700 mb-4">🎂 Distribución por Grupos Etarios</h4>
-            {ageDistribution.every(a => a.count === 0) ? (
-              <p className="text-sm text-gray-400 italic">Sin datos de edad en el rango seleccionado.</p>
-            ) : (
-              <div className="space-y-3">
-                {ageDistribution.map(age => (
-                  <div key={age.ageGroup}>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-gray-800 font-medium">{age.ageGroup} años</span>
-                      <span className="text-gray-500 font-bold">{age.count}</span>
-                    </div>
-                    <div className="bg-gray-100 rounded-full h-3 overflow-hidden">
-                      <div className="h-3 rounded-full bg-gradient-to-r from-teal-400 to-emerald-600" style={{ width: `${(age.count / maxAge) * 100}%` }}></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   // ── Modal de Historia Completa (ver/imprimir PDF individual) ──────────────
   const completa = selectedHistoria?.completa;
@@ -595,9 +597,32 @@ const ReportesHistoriasMedicas = ({ user, operatorRole, setToast }) => {
         </button>
       </div>
 
-      <FiltroCompartido />
+      <FiltroCompartido
+        filtros={filtros}
+        setFiltros={setFiltros}
+        isLoading={isLoading}
+        handleSearch={handleSearch}
+        limpiar={limpiar}
+        activeView={activeView}
+        exportCSV={exportCSV}
+        imprimirReporte={imprimirReporte}
+      />
 
-      {activeView === 'auditoria' ? <AuditoriaView /> : <DashboardView />}
+      {activeView === 'auditoria' ? (
+        <AuditoriaView
+          loadingDetailed={loadingDetailed}
+          hasSearchedDetailed={hasSearchedDetailed}
+          historias={historias}
+          openHistoryDetail={openHistoryDetail}
+          handleRowPdf={handleRowPdf}
+        />
+      ) : (
+        <DashboardView
+          loadingAnalytics={loadingAnalytics}
+          hasSearchedAnalytics={hasSearchedAnalytics}
+          analytics={analytics}
+        />
+      )}
 
       {/* Modal de historia completa */}
       {selectedHistoria && (

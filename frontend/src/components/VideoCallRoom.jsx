@@ -5,7 +5,8 @@ import {
     onSnapshot,
     updateDoc,
     collection,
-    addDoc
+    addDoc,
+    deleteField
 } from 'firebase/firestore';
 
 import config from '../config';
@@ -105,9 +106,15 @@ const VideoCallRoom = () => {
         }
         if (peerConnection.current) peerConnection.current.close();
 
-        // Informar a Firebase
+        // Informar a Firebase y LIMPIAR la sala (sdpOffer/sdpAnswer) para que
+        // la videollamada pueda re-abrirse/retomarse N veces en la misma sesión
+        // sin que el listener quede bloqueado por la negociación anterior.
         const sessionRef = doc(db, "artifacts", appId, "public", "data", "telemedicineSessions", roomId);
-        await updateDoc(sessionRef, { videoCallStatus: 'ended' }).catch(() => {});
+        await updateDoc(sessionRef, {
+            videoCallStatus: 'ended',
+            sdpOffer: deleteField(),
+            sdpAnswer: deleteField()
+        }).catch(() => {});
 
         if (role === 'doctor') {
             window.close(); // En PC cierra la pestaña
